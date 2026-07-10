@@ -1,5 +1,5 @@
 ## Goal
-- On a weekly basis we will run our "training" and make predictions for each sector on whether they will beat the spy. We pick the top three with the highest prediction. At the end of the week we will get binary results on whether our selections actually beat the spy. Repeat. When buying the three sectors we will equally spread the position size amongst them.
+- On a weekly basis we will run our "training" and make predictions for each sector on whether they will beat the spy. We pick the top three with the highest prediction. At the end of the week (or maybe midweek...) we will get binary results on whether our selections actually beat the spy. Repeat. When buying the three sectors we will equally spread the position size amongst them.
 
 ## ML Choice
 - Random Forest then XGBoost: Supervised binary classification. The learning mapping is... features are used to make predictions on whether sectors will beat the spy in the coming week. The features are bundled with the data and the label is binary, 0/1 with 1 meaning this sector beat the spy in the following week. X = features known at Fridays close of week t, y = the forward t->t+1 outcome.
