@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# API token
+.env
+
+# data
+data/
