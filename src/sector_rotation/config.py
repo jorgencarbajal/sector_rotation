@@ -1,0 +1,2 @@
+SECTORS = ["XLK", "XLE", "XLF", "XLV", "XLI", "XLP", "XLY", "XLB", "XLRE", "XLU", "XLC"]
+START_DATE = "1998-01-01"
