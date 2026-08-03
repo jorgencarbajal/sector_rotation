@@ -6,6 +6,9 @@ FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 
 
 def store_rows(rows):
+    """
+    Takes a list of data to inject into database.
+    """
     conn = get_conn()
     conn.executemany(
         "INSERT OR REPLACE INTO prices (date, ticker, value) VALUES (?, ?, ?)",
@@ -16,6 +19,9 @@ def store_rows(rows):
 
 
 def fetch_and_store_fred(series_id):
+    """
+    This function takes the series id (in this case the choices are "DGS10", "DGS2", "BAMLH0A0HYM2") uses the api key to make an http request. It then loops through the returned response and appends the information into a list to store into the db.
+    """
     params = {
         "series_id": series_id,
         "api_key": FRED_TOKEN,
@@ -37,6 +43,9 @@ def fetch_and_store_fred(series_id):
 
 
 def fetch_and_store_ticker(ticker, token, start):
+    """
+    Fetch and store related ticker data.
+    """
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     r = requests.get(url, params={"startDate": start, "token": token})
     r.raise_for_status()
