@@ -37,6 +37,15 @@ This is where your writing goes ambiguous, so these are strict.
 - If ordering matters, put it in the order. Don't write "this is the one that matters most" inside item 2.
 - Flag the parts you're least sure about, especially numbers you invented and external facts about how a service behaves. Say what breaks if you're wrong.
 
+## When you explain a change to code
+
+Show me the actual text, before and after. Describing an edit in prose is where you go ambiguous, and it costs a round trip every time.
+
+- Quote the real line as it stands now, then the real line as it will be. Not a summary of what changes about it.
+- Name the exact place the thing lives. "The SQL string inside `store_rows`" and "the tuples the caller builds" are two different places, and calling either one "a parameter" when the function has one parameter is the kind of slip that sends me down the wrong path.
+- If I state the problem back to you and get a word wrong, correct that specific word first, before explaining anything else.
+- Design discussion still comes first and still comes in prose. This rule starts once we are talking about a specific edit to a specific line.
+
 ## How we work
 
 I write the code. Build one file, class, or function at a time, at my pace. Do not generate a skeleton, several modules, or speculative structure in one go, and do not create files I didn't ask for. Designing and discussing up front is welcome; wholesale implementation is not.
@@ -67,6 +76,23 @@ Anything about why the code is shaped this way — a site that broke it, a deplo
 
 If a function does more than three distinct things, don't compress it into three sentences. Say that it's doing too much, then write it the longer way: a two-line docstring plus a one-line `#` comment on each block.
 
+Inside the body, every block gets a comment that says plainly what those lines do, in the order they do it. Read the code and narrate it. That comment comes first; if there is also something to explain about why the block is shaped that way, it goes on a second `#` line under the first one.
+
+These are the shape I want:
+
+```python
+# Open the database connection, read the query into a dataframe, close the connection
+conn = get_conn()
+df = pd.read_sql(...)
+conn.close()
+
+# If the dataframe is empty or the first date does not equal the true first date, throw an error
+if df.empty or df["date"].iloc[0] != HY_OAS_FIRST_DATE:
+    raise RuntimeError(...)
+```
+
+Note what those do: they name the actual operations — open, read, close; empty, first date, throw — in sequence. Don't label a block with a role it plays elsewhere ("Guard 2 catches a database that..."), don't lead with the rationale, and don't assume I remember what a name meant three blocks ago. The rationale is welcome, on its own line underneath.
+
 ## Terminal
 
 In my git bash, Claude Code's `!` prefix silently drops everything after `&&`. Chain commands with `;` instead.
@@ -83,7 +109,7 @@ Everything actually decided — timing, data, features, model, evaluation — is
 
 ## Data status
 
-The `prices` table holds all 11 sectors plus SPY from Tiingo (end-of-day, `adjClose`, daily bars) and 3 FRED series in the same long format, with the FRED series id sitting in the `ticker` column. The `adj_open` column has not been added or populated yet.
+The `prices` table holds all 11 sectors plus SPY from Tiingo (end-of-day, `adjClose`, daily bars) and 3 FRED series in the same long format, with the FRED series id sitting in the `ticker` column. The `adj_open` column exists on the table and is NULL on all 110,704 rows — nothing has been re-pulled into it yet.
 
 Row counts and date ranges as of the last pull:
 
@@ -104,7 +130,9 @@ The data is stale. Equities end 2026-07-17 and FRED ends 2026-07-30, roughly 7 w
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 1 is next. Nothing after it has been started.**
+**Current position: stage 1, task 4 of 6.** Stage 1 breaks into 6 tasks: (1) add the `adj_open` column, (2) widen `store_rows` to 4 columns, (3) pull `adjOpen` in `fetch_and_store_ticker`, (4) write the `BAMLH0A0HYM2` CSV loader, (5) re-pull everything, (6) verify. Tasks 1 through 3 are done. Nothing in stages 2 through 7 has been started.
+
+The `adjOpen` field name is confirmed against Tiingo's own documentation, which also confirms the CRSP adjustment method. No Tiingo pull has been run since task 3, so `fetch_and_store_ticker` is written but unexercised — task 5 is the first time it runs.
 
 **Stage 1 — Data foundation.** Add the `adj_open` column, change `store_rows` to match, re-pull all 12 Tiingo tickers in full, refresh FRED, and load the CSV. *Check:* `adj_open` is non-NULL for every equity row and NULL for every FRED row; `BAMLH0A0HYM2` still starts 1996-12-31; row counts per ticker match or exceed the counts in Data status above.
 
@@ -243,4 +271,4 @@ Data pulls hit the Tiingo and FRED APIs. Both are free tiers, but ask before run
 
 - The full history of `BAMLH0A0HYM2` came from the committed CSV, not the FRED API, which returns only the trailing 3 years. A rebuild that skips the CSV silently truncates the series from 1996 to 2023 with no error.
 - The FRED series share the `prices` table with the ETFs. A query that assumes every row is a stock price will pick up yields and spreads too.
-- `store_rows` writes 3 columns. The moment `adj_open` is added to the table, a 3-column `INSERT OR REPLACE` sets it back to NULL on every Tiingo re-pull, erasing what was just fetched. The column and the insert have to change in the same step.
+- `INSERT OR REPLACE` does not edit a row in place. It deletes the matching row and inserts a new one built only from the columns the statement names, so any column left out comes back as NULL. This is why `store_rows` has to name all 4 columns and why every tuple passed to it must carry 4 values, with FRED passing `None` for the open.
