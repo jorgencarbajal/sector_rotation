@@ -100,6 +100,26 @@ Row counts and date ranges as of the last pull:
 The data is stale. Equities end 2026-07-17 and FRED ends 2026-07-30, roughly 7 weeks behind. Re-pull before treating any backtest result as meaningful.
 
 
+## Stages
+
+The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
+
+**Current position: stage 1 is next. Nothing after it has been started.**
+
+**Stage 1 — Data foundation.** Add the `adj_open` column, change `store_rows` to match, re-pull all 12 Tiingo tickers in full, refresh FRED, and load the CSV. *Check:* `adj_open` is non-NULL for every equity row and NULL for every FRED row; `BAMLH0A0HYM2` still starts 1996-12-31; row counts per ticker match or exceed the counts in Data status above.
+
+**Stage 2 — Features.** Build the 11 columns and write the feature table, keyed on the Friday signal date and the ticker with the fill date alongside. *Check:* XLC's first valid values at 4, 12, and 26 weeks land on 2018-07-20, 2018-09-14, and 2018-12-21; no row exists for a week whose Friday is absent from the daily data; every Group B column holds one identical value across all sectors within a given week.
+
+**Stage 3 — Labels.** Build the fill-open-to-next-fill-open excess return and apply the closed-label rule. *Check:* one sector's return for one week, computed by hand from the raw prices, matches the stored label; the newest labeled week is always exactly one week behind the newest feature week; a week whose Monday is a market holiday fills on the Tuesday.
+
+**Stage 4 — Backtest and baselines.** Build `backtest.py` — fills, holidays, costs, metrics — and run the 3 lines that need no model: SPY buy-and-hold, equal weight across valid sectors, and the momentum baseline. This validates the whole pipeline before the hardest piece exists, and produces the number the model has to beat. *Check:* SPY's annual return over the period is close to a published figure; buy-and-hold shows zero turnover after the first week; a sector held two weeks running incurs no cost.
+
+**Stage 5 — Model.** The walk-forward random forest, the fourth line, and the pass rule evaluated against the momentum baseline. *Check:* no training row's label window ends after the date it is used to predict; two runs with the same seed produce identical results.
+
+**Stage 6 — Live job.** Does not start until stage 5's pass rule has been evaluated. The `predict` subcommand, the picks table, weekly scoring of the previous week's pick, phone notification, failure alerting, and reruns that are safe to repeat.
+
+**Stage 7 — Server.** Does not start until stage 6 works locally. Python and uv on the machine, tokens onto it, timezone, a systemd timer, database backup, and the first clone-and-backfill.
+
 ## Decisions log
 
 Decisions are recorded here and nowhere else. When a decision is locked in during a conversation, remind the user to add it here.
@@ -183,7 +203,7 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 
 ### Process
 
-- Phases 4 and 5 — live job, notifications, server — do not start until the backtest has run and the pass rule has been evaluated.
+- Stages 6 and 7 — live job, notifications, server — do not start until the backtest has run and the pass rule has been evaluated. See the stage list above.
 - Data leakage and date alignment are the easiest ways to get a fake good result. Show the work on any step that touches them, and on the transaction-cost math.
 
 # Working in this repo
