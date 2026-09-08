@@ -12,5 +12,9 @@ wheels/
 # API token
 .env
 
-# data
-data/
+# databases (BAMLH0A0HYM2.csv is committed - it is the only source for the full HY OAS history)
+data/*.db
+data/*.db-journal
+
+# backtest output, overwritten every run
+results/
