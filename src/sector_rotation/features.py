@@ -11,6 +11,9 @@ MOMENTUM_WINDOWS: tuple[int, ...] = (4, 12, 26)
 # The 2 volatility lookbacks in trading days, roughly 1 month and 3 months. Measured on daily returns rather than weekly ones so each estimate rests on 20 or 60 observations instead of 4 or 12.
 VOLATILITY_WINDOWS: tuple[int, ...] = (20, 60)
 
+# The beta lookback in weeks, 52 being one year of weekly returns.
+BETA_WINDOW: int = 52
+
 
 def load_daily_prices() -> pd.DataFrame:
     """
@@ -127,3 +130,28 @@ def realized_volatility(
         result[window] = at_fridays[SECTORS]
 
     return result
+
+
+def rolling_beta(weekly: pd.DataFrame, window: int = BETA_WINDOW) -> pd.DataFrame:
+    """
+    Measures how far each sector tends to move when SPY moves, over the trailing `window` weeks.
+    Returns a DataFrame of weeks by the 11 sectors holding the slope of the sector's returns against SPY's; weeks before a sector has a full window of returns are NaN.
+    `rolling(window).cov(series)` slides a fixed-length window down the rows and takes each column's covariance with that series inside it, and `div(series, axis=0)` divides every column by that series row by row.
+    """
+
+    # Divide each week's close by the previous week's and subtract 1, giving every ticker its weekly return, then pull SPY's column out on its own
+    returns = weekly.pct_change(fill_method=None)
+    spy = returns["SPY"]
+
+    # Slide a window of `window` weeks down the returns, taking each sector's covariance with SPY inside it and SPY's own variance over the same weeks
+    # Beta is the slope of the best-fit line through the sector's returns plotted against SPY's, and that slope equals covariance divided by variance, so no regression library is needed.
+    covariance = returns.rolling(window).cov(spy)
+    spy_variance = spy.rolling(window).var()
+
+    # Divide each sector's covariance by SPY's variance for the same week
+    # Both cov and var divide by window minus 1 rather than window, and because it is the same divisor on both sides it cancels here and leaves beta unaffected.
+    beta = covariance.div(spy_variance, axis=0)
+
+    # Keep only the 11 sectors, dropping SPY
+    # SPY's own column is exactly 1.0 by construction, since covariance with itself over its own variance is 1. That is worth checking as proof the two return series lined up, and it is why the column is dropped rather than kept.
+    return beta[SECTORS]

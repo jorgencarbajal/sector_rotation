@@ -132,7 +132,7 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2, task 5 of 10.**
+**Current position: stage 2, task 6 of 10.**
 
 Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
@@ -141,6 +141,10 @@ Task 2 is done — `relative_momentum` returns a dict keyed by window, each valu
 Task 3 is done — `momentum_rank` ranks the 12-week frame within each week. All 1,434 ranked weeks hold whole numbers 1 through n with no gaps and no ties, and the sector count steps up on 1999-03-19, 2016-01-01, and 2018-09-14, each 12 weeks after the corresponding inception.
 
 Task 4 is done — `realized_volatility` returns a dict keyed by window in trading days, each value 1,497 weeks by the 11 sectors. A hand-computed 20-day standard deviation for XLK on 2026-09-04 matches the stored value to 12 decimal places. The holiday-Friday fallback was confirmed on real data: 2026-04-03 is Good Friday, it appears in the weekly index but not the daily one, and the value used comes from Thursday 2026-04-02. The 60-day estimate moves 0.000589 per week on average against the 20-day one's 0.001582, which is the steadier-estimate reasoning showing up in the numbers.
+
+Task 5 is done — `rolling_beta` returns 1,497 weeks by the 11 sectors. SPY against itself came back between 0.999999999999999 and 1.000000000000048 across 1,445 weeks, and the slope for XLK on 2026-09-04 matches `numpy.polyfit` on the same 52 points to 12 decimal places. Long-run average betas order exactly as they should: XLU 0.54, XLP 0.56, XLRE 0.76, XLV 0.78, XLE 0.92, XLC 0.94, XLB 1.04, XLI 1.05, XLY 1.10, XLF 1.14, XLK 1.19.
+
+XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly returns correlate -0.41 with SPY's over the trailing 52 weeks, measured independently with `.corr()`, and the value has drifted steadily from -0.63 over 8 weeks rather than spiking. Negative betas are rare but not wrong: 44 of 13,441 sector-weeks, or 0.33%. A rolling one-year beta describes one year, not the sector's character.
 
 Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has a NULL `adj_open`, no FRED row has a non-NULL one, `BAMLH0A0HYM2` still starts 1996-12-31, and every ticker's row count grew rather than shrank.
 
@@ -172,7 +176,7 @@ Ten tasks, in dependency order. Each names what to check before moving on, becau
 
 **4. Realized volatility over the trailing 20 and 60 trading days.** Standard deviation of daily returns, computed on the daily frame, then read off at each Friday. Not resampled first, and not annualized. *Check:* one sector's 20-day figure on one Friday, computed by hand from 20 daily closes, matches the stored value.
 
-**5. Rolling beta to SPY over the trailing 52 weekly returns.** Slope of the sector's weekly returns regressed on SPY's. *Check:* running the same function with SPY as both inputs returns exactly 1.0; real sector betas land between roughly 0.4 and 1.6.
+**5. Rolling beta to SPY over the trailing 52 weekly returns.** Slope of the sector's weekly returns regressed on SPY's. *Check:* SPY against itself returns 1.0; the slope matches `numpy.polyfit` on the same 52 points. Judge realism on the long-run average per sector, not on any single week — a rolling one-year beta can go negative when a sector decouples from the market, and 44 of 13,441 sector-weeks do. The averages should order defensives low and cyclicals high: XLU 0.54, XLP 0.56, up through XLF 1.14 and XLK 1.19.
 
 **6. The four Group B columns.** Yield-curve slope as `DGS10` minus `DGS2`, that slope's weekly change, the lagged high-yield spread, and the SPY 40-week moving-average flag as 0 or 1. All three FRED series lag one business day and align to the last value on or before the lagged date, with no forward-fill across gaps. *Check:* each Group B column holds one identical value across every sector within a given week; a spot-checked Friday's spread equals the last observation on or before the prior business day.
 
