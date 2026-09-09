@@ -1,7 +1,12 @@
+from collections.abc import Sequence
+
 import pandas as pd
 
-from sector_rotation.config import ALL_TICKERS
+from sector_rotation.config import ALL_TICKERS, SECTORS
 from sector_rotation.db import get_conn
+
+# The 3 momentum lookbacks in weeks: 4 for recent strength, 12 for the classic horizon, 26 for the slower trend.
+MOMENTUM_WINDOWS: tuple[int, ...] = (4, 12, 26)
 
 
 def load_daily_prices() -> pd.DataFrame:
@@ -45,3 +50,31 @@ def to_weekly(daily: pd.DataFrame) -> pd.DataFrame:
         weekly = weekly.iloc[:-1]
 
     return weekly
+
+
+def relative_momentum(
+    weekly: pd.DataFrame,
+    windows: Sequence[int] = MOMENTUM_WINDOWS,
+) -> dict[int, pd.DataFrame]:
+    """
+    Computes each sector's trailing return minus SPY's return over the same weeks, for every window given.
+    Returns a dict keyed by window length, each value a DataFrame of weeks by the 11 sectors; rows before a sector has `window` weeks of history are NaN.
+    `sub(series, axis=0)` subtracts one column from every column of the frame, matching them up row by row.
+    """
+
+    result: dict[int, pd.DataFrame] = {}
+
+    for window in windows:
+        # Divide each week's close by the close `window` weeks earlier and subtract 1, giving every ticker its trailing return
+        # fill_method=None turns off pandas' default forward-fill. XLRE and XLC have no prices before they listed, and with filling on pandas would copy their first real price backward and report a fabricated 0% return.
+        returns = weekly.pct_change(window, fill_method=None)
+
+        # Subtract SPY's return for that week from every ticker's return for that week
+        # SPY's own column becomes exactly 0 here, since it is SPY minus SPY. That is worth checking as proof the rows lined up, and it is why SPY is dropped on the next line.
+        relative = returns.sub(returns["SPY"], axis=0)
+
+        # Keep only the 11 sectors, dropping the all-zero SPY column
+        # Leaving SPY in would make the task 3 rank run 1 to 12 and put SPY in the portfolio.
+        result[window] = relative[SECTORS]
+
+    return result
