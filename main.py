@@ -10,7 +10,7 @@ from sector_rotation.fetch import (
 )
 
 
-def pull_tickers():
+def pull_tickers() -> None:
     """
     Pulls the full daily history of all 12 Tiingo tickers and writes each one into the prices table.
     Returns None; raises requests.HTTPError on a bad response, which stops the run at the ticker that failed.
@@ -23,7 +23,7 @@ def pull_tickers():
         print(f"  {ticker}: {n} rows")
 
 
-def pull_fred():
+def pull_fred() -> None:
     """
     Pulls all 3 FRED macro series and writes them into the prices table.
     Returns None; raises requests.HTTPError on a bad response, which stops the run at the series that failed.
@@ -35,7 +35,7 @@ def pull_fred():
         print(f"  {series_id}: stored")
 
 
-def backfill():
+def backfill() -> None:
     """
     Builds the database from nothing: creates the schema, loads the committed CSV, pulls both APIs, then writes the CSV back out.
     Returns None; raises RuntimeError from the export step if the finished database would shorten the CSV instead of extending it.
@@ -58,7 +58,7 @@ def backfill():
     print(f"  {n} rows")
 
 
-def update():
+def update() -> None:
     """
     Refreshes an existing database: pulls both APIs in full, then writes the high-yield spread back out to the CSV.
     Returns None; raises RuntimeError from the export step if the database no longer holds the full spread history.
@@ -81,7 +81,7 @@ def update():
     print(f"  {n} rows")
 
 
-def main():
+def main() -> int:
     """
     Reads the subcommand off the command line and runs it.
     Returns 0 when the command finishes, and exits non-zero by letting any exception propagate rather than catching it.

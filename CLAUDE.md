@@ -72,6 +72,8 @@ Every function gets a docstring of two to three sentences, no more:
 
 Prefer naming the mechanism over describing the intent: "`async with` waits for the lock without blocking the event loop" beats "safely acquires the lock".
 
+Type-hint everything. Every function gets annotated parameters and an annotated return, and module-level constants get annotated too. Where a shape repeats — a row tuple, a record — declare a named alias once and use the alias, rather than retyping the tuple at each function.
+
 Anything about why the code is shaped this way — a site that broke it, a deploy trap, a measured result — goes in a `#` comment under the docstring, not in the docstring itself.
 
 If a function does more than three distinct things, don't compress it into three sentences. Say that it's doing too much, then write it the longer way: a two-line docstring plus a one-line `#` comment on each block.
@@ -109,30 +111,32 @@ Everything actually decided — timing, data, features, model, evaluation — is
 
 ## Data status
 
-The `prices` table holds all 11 sectors plus SPY from Tiingo (end-of-day, `adjClose`, daily bars) and 3 FRED series in the same long format, with the FRED series id sitting in the `ticker` column. The `adj_open` column exists on the table and is NULL on all 110,704 rows — nothing has been re-pulled into it yet.
+The `prices` table holds all 11 sectors plus SPY from Tiingo (end-of-day, daily bars, `adjClose` in `value` and `adjOpen` in `adj_open`) and 3 FRED series in the same long format, with the FRED series id sitting in the `ticker` column. Of 111,216 rows, `adj_open` is filled on all 74,745 equity rows and NULL on all 36,471 FRED rows.
 
-Row counts and date ranges as of the last pull:
+Row counts and date ranges as of the pull on 2026-09-09:
 
 | Ticker | Rows | Range |
 |---|---|---|
-| `DGS10` | 16,129 | 1962-01-02 to 2026-07-30 |
-| `DGS2` | 12,537 | 1976-06-01 to 2026-07-30 |
-| `BAMLH0A0HYM2` | 7,725 | 1996-12-31 to 2026-07-30 |
-| `SPY` | 7,178 | 1998-01-02 to 2026-07-17 |
-| The 9 original sectors | 6,933 each | 1998-12-22 to 2026-07-17 |
-| `XLRE` | 2,708 | 2015-10-08 to 2026-07-17 |
-| `XLC` | 2,030 | 2018-06-19 to 2026-07-17 |
+| `DGS10` | 16,155 | 1962-01-02 to 2026-09-04 |
+| `DGS2` | 12,563 | 1976-06-01 to 2026-09-04 |
+| `BAMLH0A0HYM2` | 7,753 | 1996-12-31 to 2026-09-08 |
+| `SPY` | 7,214 | 1998-01-02 to 2026-09-08 |
+| The 9 original sectors | 6,969 each | 1998-12-22 to 2026-09-08 |
+| `XLRE` | 2,744 | 2015-10-08 to 2026-09-08 |
+| `XLC` | 2,066 | 2018-06-19 to 2026-09-08 |
 
-The data is stale. Equities end 2026-07-17 and FRED ends 2026-07-30, roughly 7 weeks behind. Re-pull before treating any backtest result as meaningful.
+The Treasury series ending 4 days before the equities is the documented one-business-day lag, not a gap. 2026-09-07 was Labor Day, so the newest equity bar is Tuesday 2026-09-08, and Tuesday's Treasury values do not reach FRED until Wednesday afternoon.
 
 
 ## Stages
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 1, task 4 of 6.** Stage 1 breaks into 6 tasks: (1) add the `adj_open` column, (2) widen `store_rows` to 4 columns, (3) pull `adjOpen` in `fetch_and_store_ticker`, (4) write the `BAMLH0A0HYM2` CSV loader, (5) re-pull everything, (6) verify. Tasks 1 through 3 are done. Nothing in stages 2 through 7 has been started.
+**Current position: stage 2, task 2 of 10.** Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
-The `adjOpen` field name is confirmed against Tiingo's own documentation, which also confirms the CRSP adjustment method. No Tiingo pull has been run since task 3, so `fetch_and_store_ticker` is written but unexercised — task 5 is the first time it runs.
+Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has a NULL `adj_open`, no FRED row has a non-NULL one, `BAMLH0A0HYM2` still starts 1996-12-31, and every ticker's row count grew rather than shrank.
+
+`main.py` has 2 of its 5 subcommands written, `backfill` and `update`. The other 3 are deliberately absent because `features.py`, `backtest.py`, and `model.py` are empty — each subcommand gets added when the code behind it exists.
 
 **Stage 1 — Data foundation.** Add the `adj_open` column, change `store_rows` to match, re-pull all 12 Tiingo tickers in full, refresh FRED, and load the CSV. *Check:* `adj_open` is non-NULL for every equity row and NULL for every FRED row; `BAMLH0A0HYM2` still starts 1996-12-31; row counts per ticker match or exceed the counts in Data status above.
 
@@ -147,6 +151,31 @@ The `adjOpen` field name is confirmed against Tiingo's own documentation, which 
 **Stage 6 — Live job.** Does not start until stage 5's pass rule has been evaluated. The `predict` subcommand, the picks table, weekly scoring of the previous week's pick, phone notification, failure alerting, and reruns that are safe to repeat.
 
 **Stage 7 — Server.** Does not start until stage 6 works locally. Python and uv on the machine, tokens onto it, timezone, a systemd timer, database backup, and the first clone-and-backfill.
+
+### Stage 2 task list
+
+Ten tasks, in dependency order. Each names what to check before moving on, because a feature computed over a window two days short looks exactly like a correct one.
+
+**1. Load the prices into a daily wide frame and a weekly one.** Read `prices` into a frame with dates down the side and tickers across the top, then resample to `W-FRI` with `.last()` for the weekly version. Both frames are needed: the momentum, rank, and beta columns read the weekly one, and the volatility columns read the daily one. Apply the incomplete-final-week rule here — drop the last weekly row unless its Friday actually appears in the daily data. *Check:* XLC's first weekly row is 2018-06-22, the first Friday on or after its 2018-06-19 start; the last weekly row's Friday exists in the daily frame.
+
+**2. Relative momentum against SPY at 4, 12, and 26 weeks.** Resample first, then `pct_change(n, fill_method=None)`, then subtract SPY's return over the same window. *Check:* XLC's first valid values land on 2018-07-20, 2018-09-14, and 2018-12-21. SPY has history back to 1998, so XLC is still the binding constraint and those dates carry over from the raw-momentum verification.
+
+**3. Cross-sectional rank of 12-week momentum.** Rank the sectors within each week, 1 being best, running to however many have a non-null value that week. *Check:* within any week the ranks are 1 through n with no gaps and no ties; n is 9 through October 2015, 10 through June 2018, and 11 after that plus the 12-week warmup.
+
+**4. Realized volatility over the trailing 20 and 60 trading days.** Standard deviation of daily returns, computed on the daily frame, then read off at each Friday. Not resampled first, and not annualized. *Check:* one sector's 20-day figure on one Friday, computed by hand from 20 daily closes, matches the stored value.
+
+**5. Rolling beta to SPY over the trailing 52 weekly returns.** Slope of the sector's weekly returns regressed on SPY's. *Check:* running the same function with SPY as both inputs returns exactly 1.0; real sector betas land between roughly 0.4 and 1.6.
+
+**6. The four Group B columns.** Yield-curve slope as `DGS10` minus `DGS2`, that slope's weekly change, the lagged high-yield spread, and the SPY 40-week moving-average flag as 0 or 1. All three FRED series lag one business day and align to the last value on or before the lagged date, with no forward-fill across gaps. *Check:* each Group B column holds one identical value across every sector within a given week; a spot-checked Friday's spread equals the last observation on or before the prior business day.
+
+**7. The fill-date column.** For each Friday, the next date that exists in `prices` — no holiday calendar. *Check:* the Friday before a Monday holiday maps to the Tuesday. 2026-09-04 maps to 2026-09-08 because 2026-09-07 was Labor Day.
+
+**8. Assemble and write the feature table.** Join all 11 columns into one frame keyed on the Friday signal date and the ticker, with the fill date alongside, and drop and rebuild the table on every run. *Check:* no duplicate pair of signal date and ticker; the row count equals the number of weeks times the sectors valid in each.
+
+**9. Add the `features` subcommand to `main.py`.** Third of the five, added now that the code behind it exists.
+
+**10. Run the stage 2 checks end to end.** The three in the stage description above, against the written table rather than against frames in memory.
+
 
 ## Decisions log
 
@@ -176,6 +205,7 @@ Decisions are recorded here and nowhere else. When a decision is locked in durin
 
 - All 3 FRED series (`DGS10`, `DGS2`, `BAMLH0A0HYM2`) are lagged one business day and aligned to the last value on or before the lagged date. No forward-fill across gaps.
 - Reason for the Treasury lag: `DGS10` and `DGS2` come from the Fed's H.15 release, which publishes the prior business day's rates around 4:15pm ET. FRED's copy of Friday's value appears Monday afternoon — after the Monday-morning job runs and after the fill. Taking Friday's value would read a number that does not exist at signal time.
+- Reason for the credit-spread lag: `BAMLH0A0HYM2` posts to FRED on business-day mornings, around 10:00am ET, carrying the prior business day's value. Friday's spread therefore appears Monday at roughly 10:00am ET — after the Monday-morning job runs and after the 9:30am open. Lagging to Thursday's value uses a number that posted Friday morning, hours before it is needed. Same conclusion as the Treasury lag, different publisher and a different time of day. Corroborated by the 2026-09-09 pull: the series held Tuesday 2026-09-08's value while the H.15 series stopped at Friday 2026-09-04.
 - High-yield is the decision for the credit spread. Investment-grade is not under consideration.
 
 ### Features, version 1 — 11 columns
@@ -271,4 +301,5 @@ Data pulls hit the Tiingo and FRED APIs. Both are free tiers, but ask before run
 
 - The full history of `BAMLH0A0HYM2` came from the committed CSV, not the FRED API, which returns only the trailing 3 years. A rebuild that skips the CSV silently truncates the series from 1996 to 2023 with no error.
 - The FRED series share the `prices` table with the ETFs. A query that assumes every row is a stock price will pick up yields and spreads too.
+- SPY is in `ALL_TICKERS` and lands in the same wide frame as the sectors, but it is not one of the 11. Every ranking, every sector count, and the equal-weight benchmark has to exclude it. Leaving it in makes the rank feature run 1 to 12 and quietly puts SPY in the portfolio.
 - `INSERT OR REPLACE` does not edit a row in place. It deletes the matching row and inserts a new one built only from the columns the statement names, so any column left out comes back as NULL. This is why `store_rows` has to name all 4 columns and why every tuple passed to it must carry 4 values, with FRED passing `None` for the open.

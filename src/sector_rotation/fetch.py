@@ -7,17 +7,20 @@ import requests
 from sector_rotation.db import get_conn
 from sector_rotation.config import FRED_TOKEN
 
-FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
+FRED_URL: str = "https://api.stlouisfed.org/fred/series/observations"
+
+# One row of the prices table: date, ticker, value, adj_open. The 4th item is float | None because FRED rows carry no opening price and write None, which SQLite stores as NULL.
+PriceRow = tuple[str, str, float, float | None]
 
 # Built from __file__ rather than written as "../data/..." so the function works no matter which directory you run it from.
-HY_OAS_SERIES = "BAMLH0A0HYM2"
-HY_OAS_CSV_PATH = Path(__file__).resolve().parent.parent.parent / "data" / f"{HY_OAS_SERIES}.csv"
+HY_OAS_SERIES: str = "BAMLH0A0HYM2"
+HY_OAS_CSV_PATH: Path = Path(__file__).resolve().parent.parent.parent / "data" / f"{HY_OAS_SERIES}.csv"
 
 # The true first observation of the series. An export that does not start here is coming from a database that lost the CSV backfill.
-HY_OAS_FIRST_DATE = "1996-12-31"
+HY_OAS_FIRST_DATE: str = "1996-12-31"
 
 
-def store_rows(rows):
+def store_rows(rows: list[PriceRow]) -> None:
     """
     Writes a list of (date, ticker, value, adj_open) tuples into the prices table, replacing any row that already has the same date and ticker.
     Returns None; raises sqlite3.ProgrammingError with "Incorrect number of bindings" if a tuple does not have exactly 4 items.
@@ -35,7 +38,7 @@ def store_rows(rows):
     conn.close()
 
 
-def load_hy_oas_csv():
+def load_hy_oas_csv() -> int:
     """
     Reads the committed high-yield OAS snapshot from data/BAMLH0A0HYM2.csv and writes its rows into the prices table.
     Returns the number of rows written; raises FileNotFoundError if the file is gone and KeyError if either column has been renamed.
@@ -59,7 +62,7 @@ def load_hy_oas_csv():
     return len(rows)
 
 
-def export_hy_oas_csv():
+def export_hy_oas_csv() -> int:
     """
     Writes every BAMLH0A0HYM2 row in the prices table back out to data/BAMLH0A0HYM2.csv, so the committed snapshot never falls behind the database.
     Returns the number of rows written, or raises RuntimeError and writes nothing when the export would start after 1996-12-31 or would hold fewer rows than the file already does.
@@ -100,7 +103,7 @@ def export_hy_oas_csv():
     return len(df)
 
 
-def fetch_and_store_fred(series_id):
+def fetch_and_store_fred(series_id: str) -> None:
     """
     This function takes the series id (in this case the choices are "DGS10", "DGS2", "BAMLH0A0HYM2") uses the api key to make an http request. It then loops through the returned response and appends the information into a list to store into the db.
     """
@@ -113,7 +116,7 @@ def fetch_and_store_fred(series_id):
     r.raise_for_status()
     observations = r.json()["observations"]
 
-    rows = []
+    rows: list[PriceRow] = []
 
     for obs in observations:
         value = obs["value"]
@@ -125,7 +128,7 @@ def fetch_and_store_fred(series_id):
     store_rows(rows)
 
 
-def fetch_and_store_ticker(ticker, token, start):
+def fetch_and_store_ticker(ticker: str, token: str, start: str) -> int:
     """
     Fetches one ticker's full daily history from Tiingo starting at `start` and writes the adjusted close and adjusted open into the prices table.
     Returns the number of rows written; raises requests.HTTPError on a bad response and KeyError if a bar is missing adjOpen or adjClose.

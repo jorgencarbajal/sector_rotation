@@ -1,12 +1,15 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "sector_rotation.db"
+DB_PATH: Path = Path(__file__).resolve().parent.parent.parent / "data" / "sector_rotation.db"
 
-def get_conn():
+def get_conn() -> sqlite3.Connection:
+    """
+    Return a db connection object connecting to sector_rotation.db
+    """
     return sqlite3.connect(DB_PATH)
 
-def init_db():
+def init_db() -> None:
     """
     Creates the prices table when it is missing, and adds the adj_open column when an older database lacks it.
     Returns None; raises sqlite3.OperationalError if the database file cannot be opened or written to.
@@ -26,7 +29,7 @@ def init_db():
     """)
 
     # PRAGMA table_info(prices) returns one row per column of the table; field 1 of each row is that column's name.
-    columns = [row[1] for row in conn.execute("PRAGMA table_info(prices)")]
+    columns: list[str] = [row[1] for row in conn.execute("PRAGMA table_info(prices)")]
 
     # adj_open is left nullable on purpose: FRED rows are yields and spreads, which have no opening price, and a default of 0 would be a number that later arithmetic would silently use.
     if "adj_open" not in columns:
