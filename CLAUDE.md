@@ -132,11 +132,15 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2, task 3 of 10.**
+**Current position: stage 2, task 5 of 10.**
 
 Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
 Task 2 is done — `relative_momentum` returns a dict keyed by window, each value 1,497 weeks by the 11 sectors. All 3 of XLC's first-valid dates match the logged values exactly. SPY's column comes out at 0.0 before being dropped, confirming the rows line up, and a hand-computed XLK value for 2026-09-04 matches the stored one to 12 decimal places.
+
+Task 3 is done — `momentum_rank` ranks the 12-week frame within each week. All 1,434 ranked weeks hold whole numbers 1 through n with no gaps and no ties, and the sector count steps up on 1999-03-19, 2016-01-01, and 2018-09-14, each 12 weeks after the corresponding inception.
+
+Task 4 is done — `realized_volatility` returns a dict keyed by window in trading days, each value 1,497 weeks by the 11 sectors. A hand-computed 20-day standard deviation for XLK on 2026-09-04 matches the stored value to 12 decimal places. The holiday-Friday fallback was confirmed on real data: 2026-04-03 is Good Friday, it appears in the weekly index but not the daily one, and the value used comes from Thursday 2026-04-02. The 60-day estimate moves 0.000589 per week on average against the 20-day one's 0.001582, which is the steadier-estimate reasoning showing up in the numbers.
 
 Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has a NULL `adj_open`, no FRED row has a non-NULL one, `BAMLH0A0HYM2` still starts 1996-12-31, and every ticker's row count grew rather than shrank.
 
@@ -164,7 +168,7 @@ Ten tasks, in dependency order. Each names what to check before moving on, becau
 
 **2. Relative momentum against SPY at 4, 12, and 26 weeks.** Resample first, then `pct_change(n, fill_method=None)`, then subtract SPY's return over the same window. *Check:* XLC's first valid values land on 2018-07-20, 2018-09-14, and 2018-12-21. SPY has history back to 1998, so XLC is still the binding constraint and those dates carry over from the raw-momentum verification.
 
-**3. Cross-sectional rank of 12-week momentum.** Rank the sectors within each week, 1 being best, running to however many have a non-null value that week. *Check:* within any week the ranks are 1 through n with no gaps and no ties; n is 9 through October 2015, 10 through June 2018, and 11 after that plus the 12-week warmup.
+**3. Cross-sectional rank of 12-week momentum.** Rank the sectors within each week, 1 being best, running to however many have a non-null value that week. *Check:* within any week the ranks are 1 through n with no gaps and no ties. The count steps up 12 weeks after each inception rather than on it, because a sector has no 12-week momentum until it has 12 weeks of prices — 9 sectors from 1999-03-19, 10 from 2016-01-01, and 11 from 2018-09-14.
 
 **4. Realized volatility over the trailing 20 and 60 trading days.** Standard deviation of daily returns, computed on the daily frame, then read off at each Friday. Not resampled first, and not annualized. *Check:* one sector's 20-day figure on one Friday, computed by hand from 20 daily closes, matches the stored value.
 

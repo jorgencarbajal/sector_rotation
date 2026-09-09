@@ -8,6 +8,9 @@ from sector_rotation.db import get_conn
 # The 3 momentum lookbacks in weeks: 4 for recent strength, 12 for the classic horizon, 26 for the slower trend.
 MOMENTUM_WINDOWS: tuple[int, ...] = (4, 12, 26)
 
+# The 2 volatility lookbacks in trading days, roughly 1 month and 3 months. Measured on daily returns rather than weekly ones so each estimate rests on 20 or 60 observations instead of 4 or 12.
+VOLATILITY_WINDOWS: tuple[int, ...] = (20, 60)
+
 
 def load_daily_prices() -> pd.DataFrame:
     """
@@ -76,5 +79,51 @@ def relative_momentum(
         # Keep only the 11 sectors, dropping the all-zero SPY column
         # Leaving SPY in would make the task 3 rank run 1 to 12 and put SPY in the portfolio.
         result[window] = relative[SECTORS]
+
+    return result
+
+
+def momentum_rank(momentum: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ranks the sectors against each other within each week, giving rank 1 to the strongest.
+    Returns a DataFrame the same shape as the input, holding whole numbers 1 through however many sectors have a value that week, and NaN wherever the input was NaN.
+    `rank(axis=1)` ranks across each row rather than down each column, so every week is ranked on its own.
+    """
+
+    # Rank each week's sectors from strongest to weakest, leaving a sector out of the ranking entirely when it has no momentum value that week
+    # NaN cells stay NaN and are not counted, so a week where only 9 sectors have 12 weeks of history ranks them 1 through 9 - that is the "use only the sectors valid that week" rule, with nothing to write.
+    # method="first" breaks ties by column order so the output is always whole numbers 1 through n. The default averages ties into values like 3.5, which would break the promise that this column holds integers.
+    return momentum.rank(axis=1, ascending=False, method="first")
+
+
+def realized_volatility(
+    daily: pd.DataFrame,
+    weekly_index: pd.DatetimeIndex,
+    windows: Sequence[int] = VOLATILITY_WINDOWS,
+) -> dict[int, pd.DataFrame]:
+    """
+    Measures how much each sector's daily price has moved around over the trailing window, then reads that number off at each Friday.
+    Returns a dict keyed by window length in trading days, each value a DataFrame of weeks by the 11 sectors; weeks before a sector has a full window of returns are NaN.
+    `rolling(window).std()` slides a fixed-length window down the rows and takes the standard deviation inside each one, and `reindex(..., method="ffill")` picks the last value on or before each target date.
+    """
+
+    # Divide each day's close by the previous day's and subtract 1, giving every ticker its daily return
+    # fill_method=None keeps XLRE's and XLC's pre-listing cells as NaN instead of fabricating 0% days that would drag the standard deviation down.
+    returns = daily.pct_change(fill_method=None)
+
+    result: dict[int, pd.DataFrame] = {}
+
+    for window in windows:
+        # Slide a window of `window` trading days down the returns and take the standard deviation inside each one
+        # Rolling defaults to requiring the window to be completely full, so a sector gets no value until it has all 20 or all 60 returns. Not annualized: multiplying by the square root of 252 is the same constant everywhere and changes no ordering a tree could split on.
+        rolling_std = returns.rolling(window).std()
+
+        # Pull out the value as of each Friday, taking the last value on or before that date
+        # Taking the Friday dates directly would return nothing for a week whose Friday was a market holiday, since Good Friday never appears in the daily index. Reading the last value on or before it gives Thursday's number, which is the last thing the market actually said.
+        at_fridays = rolling_std.reindex(weekly_index, method="ffill")
+
+        # Keep only the 11 sectors, dropping SPY
+        # Volatility is a sector-specific column, and SPY's own volatility is not one of the 11 features.
+        result[window] = at_fridays[SECTORS]
 
     return result
