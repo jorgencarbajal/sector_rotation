@@ -134,7 +134,35 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 4, task 2 of 8.**
+**Current position: stage 4, task 5 of 8.**
+
+Task 4 is done — `backtest.py` has `load_feature`, `equal_weights`, and the 3 strategies. The SPY line matches `spy_return` exactly with 0 turnover after entry. Equal weight matches the row mean to 2.8e-17. The momentum baseline's picks disagree with "rank 1 through 3 and has a return" in 0 cells out of 15,895, holding exactly 3 sectors in 1,433 of 1,445 weeks. The other 12 are 1998-12-25 through 1999-03-12, before any 12-week rank exists, and hold cash.
+
+**Preliminary result, and it matters for the pass rule.** Rough compounding over the full period, before task 5's proper metrics:
+
+| line | gross CAGR | net at 0.75 bp | net at 5 bp | net at 10 bp | avg weekly turnover |
+|---|---|---|---|---|---|
+| SPY buy-and-hold | +8.70% | +8.70% | +8.70% | +8.70% | 0.00% |
+| equal weight | +9.18% | +9.17% | +9.14% | +9.10% | 0.68% |
+| momentum baseline | +6.21% | +6.03% | +5.00% | +3.80% | 22.03% |
+
+The momentum baseline loses to SPY by 3.7 points a year at 5 basis points, and by 2.5 even at the realistic 0.75. Excluding the 12 cash weeks does not rescue it: +5.04% against SPY's +8.56% over the same 1,433 weeks. The gap is not a cost artifact either — it loses by 2.5 points gross.
+
+The pass rule reads "the model's Sharpe and net annual return both beat the momentum baseline", on the assumption that momentum is the thing to beat and SPY the easier target. That is inverted here. **Revisit the pass rule before stage 5 runs**, since as written a model could clear it while still losing badly to buying SPY and doing nothing.
+
+Cost sensitivity is also concentrated entirely in the momentum line, because it is the only one that trades. Its turnover of 22% a week costs 1.2 points of CAGR between 0.75 and 5 basis points, and 2.4 between 0.75 and 10. SPY moves by 0.004 points across the same range.
+
+A NaN-handling bug in `run_strategy` was found after task 3 and fixed. If a held sector had no return that week, pandas' `skipna` defaults hid it 3 separate times: the gross return summed to 0.0 rather than NaN, the drifted weights renormalised as if that sector did not exist, and the traded amount came back 0.0. The week reported a return of zero and a turnover of zero for a position whose return was unknown, with nothing visible to say so. All 3 row sums now pass `skipna=False`, and the shift of the previous weights uses `fill_value=0.0` rather than `fillna`, which fills only the row shifting vacates instead of also swallowing a real NaN. A week that genuinely holds nothing still zeroes correctly, and the week after a NaN one recovers.
+
+Task 3 is done — `apply_costs` charges the per-side rate against the both-sides traded figure and adds `cost` and `net_return`. It is a separate function rather than a parameter on `run_strategy`, because the same run gets priced at 0.75, 5 and 10 basis points and the gross returns must not move when the cost assumption does. It copies its input, so pricing one run 3 times leaves the original untouched.
+
+All 3 cost cases check out. Holding the same 3 sectors with flat prices costs exactly 0 after entry. Holding the same 3 after one rose 30% costs only the trim: that sector drifts to 0.3939 and the trim is 0.0606 each way, which at 5 basis points is 0.61 bp. Swapping 1 of 3 gives a turnover of exactly one third and costs 3.3333 bp, which is a 10 bp round trip on a third of the portfolio.
+
+Task 2 is done — `backtest.py` has `load_returns` and `run_strategy`. `load_returns` rebuilds every ticker's absolute return from the labels table as `excess_return + spy_return`, giving 1,445 weeks by 12 tickers. `run_strategy` takes target weights and returns gross return, one-way turnover, and the both-sides traded figure the cost is charged on.
+
+Checked on a hand-built 3-week example and against real data. SPY buy-and-hold has a turnover of 1.0 in the entry week and 0.0 in all 1,444 after it, and its gross return equals `spy_return` to floating-point exactness. Equal weight across the valid sectors matches the row mean to 2.8e-17, with an average one-way turnover of 0.68% a week from drift alone. Holding the same sectors with flat prices trades nothing.
+
+Two corrections came out of writing it. Halving the summed weight change to get turnover is wrong in the entry week, where you buy the whole portfolio and sell none of it — buys 1.0 and sells 0.0 halve to 0.5, but the portfolio really did turn over once. Turnover is now the larger of buys or sells, which gives 1.0 on entry and matches the halved sum in every week where the two balance. Separately, a position that outruns the others does not drift as far as it first appears: 0.5 growing 10% against a flat 0.5 lands at 0.5238 rather than 0.55, because the whole portfolio grew.
 
 Task 1 is done — the `labels` table gained a `spy_return` column, giving 14,002 rows by 4. A hand computation from 2 raw SPY opens matches to 12 decimal places. `spy_return` is identical across sectors in 0 weeks out of variance, and `excess_return + spy_return` recovers the sector's absolute return with a worst discrepancy of 0.00e+00 across all 14,002 rows, not just a spot check. The NOT NULL constraint rejects a null. Verified on a copy of the database before you ran it.
 
@@ -352,6 +380,10 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 
 - 4 lines through the same backtest with the same fills and costs: the model, SPY buy-and-hold, equal weight across sectors valid that week rebalanced weekly, and a momentum baseline sorting on 12-week relative momentum and holding the top N with no model.
 - Transaction costs: a parameter, default 5 basis points per side, charged only on the portion of the portfolio that changes. The final backtest is run once more at 10 basis points for sensitivity.
+- Broker cost structure, from Interactive Brokers' published US commission schedule read on 2026-09-10. IBKR Lite normally charges USD 0.00 commission with no minimum or maximum, but footnote 3 carves out orders that execute in the opening auction: they are free only while they stay under 10% of the account's monthly share volume, and a market order placed before the open is treated as a market-on-open order. This strategy fills every trade at the open, so 100% of its volume falls in that carve-out and it is charged the lesser of USD 0.005 per share or 1% of trade value. The per-share figure binds. For this strategy, IBKR Lite therefore costs the same as IBKR Pro Fixed.
+- What that works out to, at opening prices on 2026-09-09: 0.657 basis points per side averaged across the 11 sectors, ranging from 1.161 bp on XLU at USD 43.05 to 0.265 bp on XLK at USD 188.64. Sells add the SEC transaction fee of 0.206 bp; the FINRA activity and audit-trail fees are under 0.02 bp and round away. A round trip on the average sector is therefore about 1.5 basis points in explicit fees, against the 10 basis points a 5-per-side assumption implies.
+- The 5 basis points per side stays as the default anyway, because explicit fees are not the whole cost. The bid-ask spread and whatever the opening auction prints away from the quoted mid are not in any fee schedule and are the larger unknown. 5 per side is conservative, which is the safe direction. If the model fails the pass rule at 5, re-run at 0.75 per side before discarding it — that is the realistic floor, and the gap between the two is worth knowing.
+- One asymmetry the cost model ignores: a per-share fee costs more in basis points on a cheap ETF than an expensive one, 4.4 times more on XLU than on XLK. Charging a flat rate across all sectors slightly understates the cost of holding the cheap ones.
 - Turnover accounts for weight drift. Each week's actual weights, after a week of price moves has pushed them away from equal, are compared against the new target weights, and the cost is charged on the difference. Comparing target to target would see no change when the same sectors are held 2 weeks running and charge nothing, even though the position really was trimmed back to equal weight. That understates costs on every line equally, so it would leave the comparison between them fair while making all the absolute returns better than reality.
 - The `labels` table carries a `spy_return` column alongside `excess_return`, computed from the same 2 fill opens. A sector's absolute return is then `excess_return + spy_return`, and SPY's own backtest line is `spy_return` directly. Storing it rather than recomputing it in `backtest.py` keeps 2 numbers that must agree from drifting apart.
 - Metrics after costs, for all 4 lines: annual return, annual volatility, Sharpe ratio with the risk-free rate set to zero and labeled as such, maximum drawdown, average weekly turnover, hit rate as the fraction of weeks beating SPY, and return per calendar year.
