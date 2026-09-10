@@ -134,7 +134,17 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 3, task 5 of 6.**
+**Current position: stage 3 complete, stage 4 not started.**
+
+All of stage 3's checks passed against the stored tables on 2026-09-10, queried from SQL. `features` holds 14,013 rows to 2026-09-04, `labels` holds 14,002 to 2026-08-28. All 14,002 labels join to a feature row and 0 are orphaned. 3 holiday weeks were spot-checked and each fills on the Tuesday: 2026-09-04 and 2025-08-29 over Labor Day, 2026-01-16 over Martin Luther King Day. 0 labeled weeks have a missing fill date.
+
+The trainable set — rows carrying a label and all 11 features — is 12,781, starting 1999-12-24. That is 11 fewer than the 12,792 complete feature rows, the newest week again.
+
+Task 5 is done — pytest added to the dev dependency group, `tests/test_features.py` and `tests/test_labels.py` written, 6 tests passing in 0.4 seconds with no database involved.
+
+Each test was verified by breaking the behavior it guards and confirming it caught the break. Setting `FRED_LAG_BUSINESS_DAYS` to 0 fails both alignment tests. Changing the alignment from `ffill` to `nearest` fails the walk-back test. Changing `searchsorted` from `side="right"` to `side="left"` fails both fill-date tests. Changing `shift(-1)` to `shift(-2)` fails the label-window test. All 4 mutations were reverted.
+
+Writing the tests found a real inconsistency: `build_labels` ended with `excess[SECTORS]`, which raises when a sector is absent, while `load_daily_prices` had already been changed to `reindex` for that exact reason. `build_labels` now reindexes too. The real pipeline still produces 14,002 label rows.
 
 Task 4 is done — the `features` subcommand is now `dataset` and builds both tables in one run. `main.py --help` lists `backfill`, `update`, `dataset`.
 
@@ -234,6 +244,33 @@ Six tasks, in dependency order. Stage 3 is where the project first uses data fro
 **5. Add pytest and write the first 4 tests.** They cover the steps where a mistake is silent: the FRED one-business-day lag, the Treasury alignment, the closed-label rule, and the holiday fill rule. *Check:* each test fails when you deliberately break the thing it guards. A test that still passes with the code broken is worth nothing, so this is the check that matters, not the count of passing tests.
 
 **6. Run the stage 3 checks end to end.** Against the stored tables, queried from SQL rather than recomputed. *Check:* every labeled row joins to exactly one feature row; a week whose Monday is a market holiday fills on the Tuesday; the newest labeled week is behind the newest feature week by 1 week when prices extend past the last Friday and by 2 weeks when they stop on it, rather than by a fixed number.
+
+
+### Stage 4 task list
+
+Eight tasks. Stage 4 produces the number the model has to beat, so a backtest that flatters itself here sets the bar too low and every stage 5 result inherits the error.
+
+**Two decisions to settle before task 1.**
+
+The labels table holds excess returns only — sector minus SPY. The backtest needs absolute returns as well, for SPY's own line and for the portfolio's return. Either the labels table gains a `spy_return` column, from which a sector's absolute return is `excess_return + spy_return`, or `backtest.py` recomputes both from prices. Storing it is the recommendation: it comes from the same 2 dates at the same time, and recomputing it elsewhere is how two numbers that should agree stop agreeing.
+
+The logged cost rule says holding a sector 2 weeks running costs nothing. That is exactly true only if the position is never rebalanced back to equal weight. A sector that ran up 10% while the others were flat is above its target weight, and trimming it costs something. The simple reading understates costs slightly and so flatters every line equally. Decide whether the turnover calculation follows target weights week to week, or accounts for the drift.
+
+**1. Add `spy_return` to the labels table.** Computed from the same 2 fill opens as the excess return. *Check:* one week's value hand-computed from 2 raw SPY opens; a sector's absolute return recovered as `excess_return + spy_return` matches the same return computed directly from that sector's own opens.
+
+**2. Turn a weekly set of picks into a weekly return series.** Given which sectors are held each week, produce the portfolio's return for that week and the turnover against the previous week. *Check:* a hand-built 3-week example with known picks gives the returns you can work out on paper; turnover is 0 in a week where the picks did not change.
+
+**3. Apply transaction costs to turnover.** A parameter, default 5 basis points per side, charged on the portion of the portfolio that changes. *Check:* holding the same 3 sectors 2 weeks running costs exactly 0; replacing 1 of 3 costs the round trip on one third of the portfolio.
+
+**4. Build the 3 strategies that need no model.** SPY buy-and-hold, equal weight across the sectors valid that week rebalanced weekly, and the momentum baseline that sorts on 12-week relative momentum and holds the top N. *Check:* the SPY line's weekly return equals `spy_return` exactly; the equal-weight line equals the mean of that week's sector returns; the momentum baseline's picks are exactly the rows with `mom_rank_12w` of 1 through N.
+
+**5. Compute the metrics.** Annual return, annual volatility, Sharpe with the risk-free rate at zero and labeled as such, maximum drawdown, average weekly turnover, hit rate against SPY, and return per calendar year. *Check:* a constant-return series gives zero volatility and a drawdown of 0 without dividing by zero; a monotone rising series has a drawdown of 0; the per-year returns compound to the whole-period return.
+
+**6. Write the results out.** A CSV of weekly returns per line, the metrics table, and the comparison chart, into the git-ignored `results/`. Adds matplotlib. *Check:* a second run overwrites rather than accumulating; the chart renders without a display attached, which matters for the server later.
+
+**7. Add the `backtest` subcommand.** Fourth of the 5, with the cost in basis points and the number of sectors held as options. *Check:* it runs end to end from a clean `results/`, and exits non-zero when the tables are missing.
+
+**8. Run the stage 4 checks end to end.** *Check:* SPY's annual return over the period is close to a published figure for the same span; buy-and-hold shows zero turnover after the first week; a sector held 2 weeks running incurs no cost. Then record the momentum baseline's Sharpe and net annual return in this file, because those 2 numbers are what the pass rule measures the model against.
 
 
 ## Decisions log
@@ -354,6 +391,7 @@ The project uses uv and is pinned to Python 3.12.
 uv sync                    # install dependencies into .venv
 uv run main.py backfill    # build the database from scratch: Tiingo, FRED, and the CSV
 uv run main.py update      # re-pull all 12 tickers in full, refresh FRED
+uv run pytest              # run the tests, under a second, no database needed
 uv run main.py dataset     # drop and rebuild the features and labels tables
 uv run main.py backtest    # run the 4 lines, write results/
 uv run main.py predict     # this week's picks

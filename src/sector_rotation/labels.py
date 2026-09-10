@@ -37,7 +37,9 @@ def build_labels(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
     # Subtract SPY's return over the same two dates from every ticker's return
     excess = returns.sub(returns["SPY"], axis=0)
 
-    return excess[SECTORS]
+    # Keep the 11 sectors, dropping the all-zero SPY column
+    # reindex rather than excess[SECTORS]: selecting raises when a sector is absent from the input, while reindex gives it an all-NaN column and lets the caller decide what a missing sector means. Same choice, for the same reason, as in load_daily_prices.
+    return excess.reindex(columns=SECTORS)
 
 
 def build_label_table(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
