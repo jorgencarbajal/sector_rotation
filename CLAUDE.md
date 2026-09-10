@@ -132,7 +132,7 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2, task 7 of 10.**
+**Current position: stage 2, task 8 of 10.**
 
 Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
@@ -149,6 +149,8 @@ Task 6 is done — `align_fred` and `group_b_features` produce 1,497 weeks by 4 
 The leakage check passes with room to spare. Across all 4,491 Friday-and-series pairs, the observation used is never dated on or after its own Friday: 4,388 reach back 1 calendar day to the Thursday, 102 reach back 2 days when that Thursday was a holiday, and exactly 1 reaches back 4 days. That worst case of 4 days also settles the "no blind forward-fill across gaps" concern — no value is ever carried further than that, so no cap in code is needed.
 
 The trend flag holds only 0.0 and 1.0 with no filled-in False, first valid 1998-10-02 which is 40 weeks after the frame starts, and sits above the average in 74.3% of weeks.
+
+Task 7 is done — `fill_dates` maps each Friday to the first trading day strictly after it. The gap is 3 calendar days in 1,354 weeks (Friday to Monday), 4 days in 141 (a Monday holiday), and 5 days in 2. In 0 of 1,497 weeks does the fill date equal the Friday, which is the check that the lookahead trap is closed. Labor Day 2026 resolves Friday 2026-09-04 to Tuesday 2026-09-08, and Good Friday 2026-04-03 — a Friday that is not a trading day at all — resolves to Monday 2026-04-06. Truncating the data at a Friday makes the newest week's fill date NaT, which is the normal live case: on Monday morning the day the trade fills has not been recorded yet.
 
 XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly returns correlate -0.41 with SPY's over the trailing 52 weeks, measured independently with `.corr()`, and the value has drifted steadily from -0.63 over 8 weeks rather than spiking. Negative betas are rare but not wrong: 44 of 13,441 sector-weeks, or 0.33%. A rolling one-year beta describes one year, not the sector's character.
 
@@ -274,6 +276,7 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 - Transaction costs: a parameter, default 5 basis points per side, charged only on the portion of the portfolio that changes. The final backtest is run once more at 10 basis points for sensitivity.
 - Metrics after costs, for all 4 lines: annual return, annual volatility, Sharpe ratio with the risk-free rate set to zero and labeled as such, maximum drawdown, average weekly turnover, hit rate as the fraction of weeks beating SPY, and return per calendar year.
 - Pass rule, fixed before the backtest runs: the model's Sharpe and net annual return both beat the momentum baseline, and the model beats the baseline in more than half the calendar years. Beating SPY but not the baseline means momentum works and the model adds nothing. Underperforming is a valid finding.
+- Feature-freshness diagnostic, to run once stage 4 works: rebuild with the 3 FRED series unlagged, taking each Friday's own value instead of Thursday's, and compare against the lagged build. The unlagged version is not tradeable — Friday's high-yield spread does not post until Monday 10:00am ET — so it is a diagnostic, never a candidate strategy. If the two are indistinguishable, that settles it: neither paying for a real-time ICE feed nor moving the rebalance to Tuesday is worth pursuing.
 - All crisis periods kept — 2000, 2008, 2020 and everything else. No exclusions.
 - Output to a git-ignored `results/`, overwritten each run: a CSV of weekly returns per line, the metrics table, and the comparison chart.
 

@@ -214,3 +214,22 @@ def group_b_features(weekly: pd.DataFrame, fred_daily: pd.DataFrame) -> pd.DataF
             "spy_above_40w": spy_trend,
         }
     )
+
+
+def fill_dates(weekly_index: pd.DatetimeIndex, daily_index: pd.DatetimeIndex) -> pd.Series:
+    """
+    Finds, for each Friday signal date, the first trading day that comes after it, which is the day that week's trade fills at the open.
+    Returns a Series indexed by the Friday dates holding the fill date, or NaT for a Friday with no trading day after it yet.
+    `searchsorted(values, side="right")` returns, for each value, the position of the first entry in the index that is strictly greater than it.
+    """
+
+    # For each Friday, find the position of the first trading date strictly after it
+    # side="right" is what makes it strictly after. side="left" would return the Friday itself whenever the Friday was a trading day, which is filling at Friday's open on a signal from Friday's close.
+    # Being strictly after is also what skips holidays without a calendar: Labor Day is simply not in daily_index, so the first date after Friday 2026-09-04 is Tuesday 2026-09-08.
+    positions = daily_index.searchsorted(weekly_index, side="right")
+
+    # Turn each position into the date it points at, using NaT where the position runs off the end of the index
+    # The newest Friday normally runs off the end, because on a Monday morning the data stops at the previous Friday and the day the trade fills has not been recorded yet. That row still carries usable features; it just has no fill price.
+    out = [daily_index[p] if p < len(daily_index) else pd.NaT for p in positions]
+
+    return pd.Series(out, index=weekly_index, name="fill_date")
