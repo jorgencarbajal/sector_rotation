@@ -125,7 +125,7 @@ Row counts and date ranges as of the pull on 2026-09-09:
 | `XLRE` | 2,744 | 2015-10-08 to 2026-09-08 |
 | `XLC` | 2,066 | 2018-06-19 to 2026-09-08 |
 
-The database also holds a `features` table, 14,013 rows by 14 columns, dropped and rebuilt by `main.py features`.
+The database also holds a `features` table of 14,013 rows by 14 columns and a `labels` table of 14,002 rows by 3, both dropped and rebuilt by `main.py dataset`.
 
 The Treasury series ending 4 days before the equities is the documented one-business-day lag, not a gap. 2026-09-07 was Labor Day, so the newest equity bar is Tuesday 2026-09-08, and Tuesday's Treasury values do not reach FRED until Wednesday afternoon.
 
@@ -134,7 +134,11 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 3, task 3 of 6.**
+**Current position: stage 3, task 5 of 6.**
+
+Task 4 is done — the `features` subcommand is now `dataset` and builds both tables in one run. `main.py --help` lists `backfill`, `update`, `dataset`.
+
+Task 3 is done — `build_label_table` and `write_label_table` produce 14,002 rows by 3 columns (`signal_date`, `ticker`, `excess_return`), running 1998-12-25 to 2026-08-28. Rows with no label are dropped rather than stored, so joining this table against `features` hands back exactly the trainable set. The write path was tested against a throwaway database: two runs give the same count, the round trip preserves every value, the primary key rejects a duplicate, and the NOT NULL on `excess_return` rejects a null.
 
 Task 2 is done — `labels.py` has `opens_at` and `build_labels`, producing 1,497 weeks by the 11 sectors with 14,002 labels present. A hand computation from 4 raw opening prices matches to 10 decimal places: XLK for week 2026-08-28 buys at 185.7750 on 08-31 and sells at 188.6400 on 09-08, SPY moves 767.3300 to 769.0700, giving +0.0131542781 both ways. SPY against itself is exactly 0.0. The newest week 2026-09-04 has 0 labels while 08-28 and 08-21 have 11 each. In 0 weeks is the buy date on or before its own Friday, and in 0 weeks is the sell date on or before the buy date. The 14,002 labels against 14,013 feature rows differ by exactly 11, the newest week's sectors.
 
@@ -166,7 +170,7 @@ Task 7 is done — `fill_dates` maps each Friday to the first trading day strict
 
 Task 8 is done — `build_feature_table` and `write_feature_table` produce 14,013 rows by 14 columns, running 1998-12-25 to 2026-09-04. The row count matches the number of non-NaN weekly price cells across the 11 sectors exactly, 0 rows duplicate a signal date and ticker, and 0 weeks have a regime column that differs across sectors. XLRE's and XLC's first rows land on 2015-10-09 and 2018-06-22, their first weekly prices. The write path was tested against a throwaway database: running it twice gives the same 14,013 rows, the round trip preserves every numeric value, and the primary key rejects a duplicate insert.
 
-Task 9 is done — `main.py features` drops and rebuilds the table, printing a line per step. Running it against an empty database raises `no price data found in the prices table - run backfill first` rather than a pandas KeyError. That guard needed a change in `load_daily_prices`: it now reindexes the columns instead of selecting them, so a ticker with no rows comes back as an all-NaN column rather than raising. That is what its docstring already promised, and it lets the caller decide what a missing ticker means.
+Task 9 is done — `main.py features` drops and rebuilds the table, printing a line per step. That subcommand was renamed to `dataset` in stage 3 task 4. Running it against an empty database raises `no price data found in the prices table - run backfill first` rather than a pandas KeyError. That guard needed a change in `load_daily_prices`: it now reindexes the columns instead of selecting them, so a ticker with no rows comes back as an all-NaN column rather than raising. That is what its docstring already promised, and it lets the caller decide what a missing ticker means.
 
 The first week where all 11 features are present is 1999-12-24, set by the 52-week beta. Five years from there puts the first walk-forward prediction at roughly the end of 2004, which matches the estimate already in the decisions log. 12,792 of the 14,013 rows are fully complete; the rest are real observations missing a column whose window has not filled yet.
 
@@ -174,7 +178,7 @@ XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly
 
 Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has a NULL `adj_open`, no FRED row has a non-NULL one, `BAMLH0A0HYM2` still starts 1996-12-31, and every ticker's row count grew rather than shrank.
 
-`main.py` has 3 of its 5 subcommands written: `backfill`, `update`, and `features`. The other 2 are deliberately absent because `backtest.py` and `model.py` are empty — each subcommand gets added when the code behind it exists.
+`main.py` has 3 of its 5 subcommands written: `backfill`, `update`, and `dataset`. The other 2 are deliberately absent because `backtest.py` and `model.py` are empty — each subcommand gets added when the code behind it exists.
 
 **Stage 1 — Data foundation.** Add the `adj_open` column, change `store_rows` to match, re-pull all 12 Tiingo tickers in full, refresh FRED, and load the CSV. *Check:* `adj_open` is non-NULL for every equity row and NULL for every FRED row; `BAMLH0A0HYM2` still starts 1996-12-31; row counts per ticker match or exceed the counts in Data status above.
 
@@ -210,7 +214,7 @@ Ten tasks, in dependency order. Each names what to check before moving on, becau
 
 **8. Assemble and write the feature table.** Join all 11 columns into one frame keyed on the Friday signal date and the ticker, with the fill date alongside, and drop and rebuild the table on every run. *Check:* no duplicate pair of signal date and ticker; the row count equals the number of weeks times the sectors valid in each.
 
-**9. Add the `features` subcommand to `main.py`.** Third of the five, added now that the code behind it exists.
+**9. Add the `features` subcommand to `main.py`.** Third of the five, added now that the code behind it exists. Later renamed to `dataset` in stage 3 task 4, once it built the labels table too.
 
 **10. Run the stage 2 checks end to end.** The three in the stage description above, against the written table rather than against frames in memory.
 
@@ -332,11 +336,11 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
   - `config.py` — sector list, start date, and API tokens read from `.env`.
   - `db.py` — SQLite connection and schema.
   - `fetch.py` — the full-history re-pull of the 12 Tiingo tickers, the FRED pull, and the CSV load.
-  - `features.py` — builds the Group A and Group B columns and writes the feature table. Empty.
-  - `labels.py` — builds the open-to-open excess return and applies the closed-label rule. Empty.
+  - `features.py` — builds the Group A and Group B columns and writes the features table.
+  - `labels.py` — builds the open-to-open excess return and writes the labels table.
   - `backtest.py` — takes a ranking, applies fills, holidays, and costs, and produces the 4 lines and their metrics. Empty.
   - `model.py` — the walk-forward random forest. Empty.
-- `main.py` — the runner, with subcommands `backfill`, `update`, `features`, `backtest`, and `predict`. None of them exist yet.
+- `main.py` — the runner, with subcommands `backfill`, `update`, `dataset`, `backtest`, and `predict`. The first 3 exist.
 - `tests/` — covers the steps where a mistake is silent: the FRED one-business-day lag, the Treasury alignment, the closed-label rule, and the holiday fill rule.
 - `notebooks/main.ipynb` — prototyping only. Working code moves into the package.
 - `data/` — `BAMLH0A0HYM2.csv` is committed and is the only source for the full high-yield spread history. The `.db` files are git-ignored.
@@ -350,7 +354,7 @@ The project uses uv and is pinned to Python 3.12.
 uv sync                    # install dependencies into .venv
 uv run main.py backfill    # build the database from scratch: Tiingo, FRED, and the CSV
 uv run main.py update      # re-pull all 12 tickers in full, refresh FRED
-uv run main.py features    # drop and rebuild the feature table
+uv run main.py dataset     # drop and rebuild the features and labels tables
 uv run main.py backtest    # run the 4 lines, write results/
 uv run main.py predict     # this week's picks
 ```

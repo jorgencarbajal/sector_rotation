@@ -10,10 +10,12 @@ from sector_rotation.fetch import (
 )
 from sector_rotation.features import (
     build_feature_table,
+    fill_dates,
     load_daily_prices,
     to_weekly,
     write_feature_table,
 )
+from sector_rotation.labels import build_label_table, write_label_table
 
 
 def pull_tickers() -> None:
@@ -87,14 +89,14 @@ def update() -> None:
     print(f"  {n} rows")
 
 
-def build_features() -> None:
+def build_dataset() -> None:
     """
-    Rebuilds the features table from whatever is currently in the prices table.
+    Rebuilds both modeling tables, features and labels, from whatever is currently in the prices table.
     Returns None; raises RuntimeError when the prices table holds no equity data, which means backfill has not been run.
-    Named build_features rather than features because this module already imports from a module called features.
+    Named build_dataset rather than dataset only to keep the name distinct from the subcommand string it is registered under.
     """
 
-    # Read the 12 Tiingo tickers out of prices and fold them into weekly bars
+    # Read the adjusted closes of the 12 Tiingo tickers out of prices and fold them into weekly bars
     print("Loading prices")
     daily = load_daily_prices()
 
@@ -111,9 +113,17 @@ def build_features() -> None:
 
     # Build all 11 feature columns into one long table, then drop and rebuild the features table from it
     print("Building features")
-    table = build_feature_table(weekly, daily, fred_daily)
-    n = write_feature_table(table)
-    print(f"  {n} rows written, {table['signal_date'].min()} to {table['signal_date'].max()}")
+    features = build_feature_table(weekly, daily, fred_daily)
+    n = write_feature_table(features)
+    print(f"  {n} rows written, {features['signal_date'].min()} to {features['signal_date'].max()}")
+
+    # Read the adjusted opens, work out which day each week's trade fills on, and build the labels from those two
+    # Opens rather than closes because that is what a fill is priced at, and the label has to measure a return the position could actually have earned.
+    print("Building labels")
+    opens = load_daily_prices(column="adj_open")
+    labels = build_label_table(opens, fill_dates(weekly.index, daily.index))
+    n = write_label_table(labels)
+    print(f"  {n} rows written, {labels['signal_date'].min()} to {labels['signal_date'].max()}")
 
 
 def main() -> int:
@@ -128,11 +138,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("backfill", help="build the database from nothing: schema, CSV, both APIs")
     subparsers.add_parser("update", help="refresh an existing database from both APIs")
-    subparsers.add_parser("features", help="drop and rebuild the features table from the prices table")
+    subparsers.add_parser("dataset", help="drop and rebuild the features and labels tables from the prices table")
 
     # Read the command line, look the command up in the table, and call it
     args = parser.parse_args()
-    commands = {"backfill": backfill, "update": update, "features": build_features}
+    commands = {"backfill": backfill, "update": update, "dataset": build_dataset}
     commands[args.command]()
 
     return 0
