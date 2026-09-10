@@ -21,6 +21,9 @@ TREND_WINDOW: int = 40
 # Every FRED series here publishes the prior business day's value: the Treasuries around 4:15pm ET and the credit spread around 10:00am ET. Friday's own values therefore land Monday, after the job has run and after the fill, so Thursday's is the newest one honestly available.
 FRED_LAG_BUSINESS_DAYS: int = 1
 
+# The 2 price columns the prices table holds. "value" is the adjusted close, which every feature is built from; "adj_open" is the adjusted open, which every fill is priced at.
+PRICE_COLUMNS: tuple[str, ...] = ("value", "adj_open")
+
 # The 11 feature columns in the order they are written, after the 3 key columns signal_date, ticker and fill_date.
 FEATURE_COLUMNS: tuple[str, ...] = (
     "rel_mom_4w",
@@ -37,21 +40,29 @@ FEATURE_COLUMNS: tuple[str, ...] = (
 )
 
 
-def load_daily_prices(tickers: Sequence[str] = ALL_TICKERS) -> pd.DataFrame:
+def load_daily_prices(
+    tickers: Sequence[str] = ALL_TICKERS,
+    column: str = "value",
+) -> pd.DataFrame:
     """
-    Reads the given tickers out of the prices table and returns them with dates down the side and tickers across the top.
+    Reads one price column for the given tickers out of the prices table and returns it with dates down the side and tickers across the top.
     Returns a DataFrame with one column per requested ticker; cells before a ticker's first observation are NaN rather than 0.
     `pivot` turns the long table, which has one row per date-and-ticker pair, into the wide shape where each ticker gets its own column.
     """
 
-    # The default reads the 12 Tiingo tickers. Passing FRED_SERIES reads the 3 macro series instead - the reshaping is identical, so a second loader would be a copy of this one.
+    # Reject any column name that is not one of the two real price columns
+    # The column name is pasted into the SQL string below rather than passed as a parameter, because SQL will not accept a placeholder in place of a column name. Checking it against a fixed list is what keeps that safe.
+    if column not in PRICE_COLUMNS:
+        raise ValueError(f"column must be one of {PRICE_COLUMNS}, got {column!r}")
+
+    # The default reads the adjusted close of the 12 Tiingo tickers. Passing FRED_SERIES reads the 3 macro series instead, and passing "adj_open" reads the opening prices that fills are priced at.
     tickers = list(tickers)
     placeholders = ",".join("?" * len(tickers))
 
     # Open the database connection, read the requested tickers into a long dataframe with real dates, close the connection
     conn = get_conn()
     long = pd.read_sql(
-        f"SELECT date, ticker, value FROM prices WHERE ticker IN ({placeholders}) ORDER BY date, ticker",
+        f"SELECT date, ticker, {column} AS price FROM prices WHERE ticker IN ({placeholders}) ORDER BY date, ticker",
         conn,
         params=tickers,
         parse_dates=["date"],
@@ -59,7 +70,7 @@ def load_daily_prices(tickers: Sequence[str] = ALL_TICKERS) -> pd.DataFrame:
     conn.close()
 
     # Reshape from one row per date-and-ticker into one row per date with a column per ticker
-    wide = long.pivot(index="date", columns="ticker", values="value")
+    wide = long.pivot(index="date", columns="ticker", values="price")
 
     # Reorder the columns to match the requested order, XLRE and XLC list later than the rest
     # reindex rather than wide[tickers]: selecting raises KeyError when a requested ticker has no rows at all, while reindex gives it an all-NaN column, which is what the docstring above promises and lets the caller decide what a missing ticker means.

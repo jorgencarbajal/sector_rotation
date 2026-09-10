@@ -134,7 +134,13 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2 complete, stage 3 not started.**
+**Current position: stage 3, task 3 of 6.**
+
+Task 2 is done — `labels.py` has `opens_at` and `build_labels`, producing 1,497 weeks by the 11 sectors with 14,002 labels present. A hand computation from 4 raw opening prices matches to 10 decimal places: XLK for week 2026-08-28 buys at 185.7750 on 08-31 and sells at 188.6400 on 09-08, SPY moves 767.3300 to 769.0700, giving +0.0131542781 both ways. SPY against itself is exactly 0.0. The newest week 2026-09-04 has 0 labels while 08-28 and 08-21 have 11 each. In 0 weeks is the buy date on or before its own Friday, and in 0 weeks is the sell date on or before the buy date. The 14,002 labels against 14,013 feature rows differ by exactly 11, the newest week's sectors.
+
+Weekly excess returns run a mean of +0.002%, a median of -0.015%, a standard deviation of 2.016%, and extremes of -16.5% and +25.6% — the near-zero centre is what it should be, since the sectors collectively make up the market they are measured against.
+
+Task 1 is done — `load_daily_prices` gained a `column` parameter, defaulting to `value` (the adjusted close) and accepting `adj_open` (the price fills happen at). The opens frame matches the closes frame exactly in shape, index and columns, with 0 date-and-ticker pairs holding one but not the other. Asking for opens on the FRED series returns 0 non-null cells, as it should. The column name is checked against a fixed list before being pasted into the SQL, because SQL will not accept a placeholder in place of a column name — both `'close'` and an injection attempt are rejected. The default still produces the same 14,013-row feature table.
 
 All of stage 2's checks passed against the stored `features` table on 2026-09-09, queried from SQL rather than recomputed: 14,013 rows across 1,446 weeks and 11 sectors, running 1998-12-25 to 2026-09-04. XLC's 3 first-valid momentum dates match. 0 weeks have a regime column that differs across sectors. 0 rows duplicate a signal date and ticker. 0 rows have a fill date on or before their signal date, 0 have a missing one, and every fill date is a real trading day in `prices`. All 1,434 ranked weeks hold 1 through n.
 
@@ -213,19 +219,17 @@ Ten tasks, in dependency order. Each names what to check before moving on, becau
 
 Six tasks, in dependency order. Stage 3 is where the project first uses data from *after* the signal date, so the checks matter more here than anywhere so far — a label built one week off looks entirely reasonable and produces a backtest that is quietly wrong.
 
-**Two decisions to settle before task 1.** Whether the labels live in their own table or as another column on `features`, and which subcommand builds them given that the 5-subcommand list has no `labels` entry.
-
 **1. Let `load_daily_prices` read the opens.** It currently reads `value`, the adjusted close. A `column` parameter lets the same function return `adj_open` instead, which is what fills are priced at. *Check:* the opens frame has the same shape as the closes frame, and no date-and-ticker pair has a close but no open.
 
 **2. Build the label.** For each week and sector, the sector's return from its fill open to the following week's fill open, minus SPY's return over the same two dates. The following week's fill date comes from shifting the fill-date series back by one row. *Check:* one sector's label for one week, computed by hand from 4 raw opens, matches the stored value; every sector's label is NaN in the newest week, because its window has not closed; a label computed for SPY against itself is exactly 0.
 
-**3. Write the labels table.** Same drop-and-rebuild treatment as `features`, keyed on signal date and ticker so the two tables join cleanly. *Check:* the primary key rejects a duplicate insert; a round trip through SQLite preserves every value; running it twice gives the same row count.
+**3. Write the labels table.** A `labels` table of its own rather than another column on `features`, keyed on signal date and ticker so the two join cleanly. Separate because features are what was knowable at Friday's close and labels are what happened afterward, and keeping that boundary structural makes it harder to train on a column you should not. *Check:* the primary key rejects a duplicate insert; a round trip through SQLite preserves every value; running it twice gives the same row count.
 
-**4. Wire it into `main.py`.** One command rebuilds both tables, since the 5-subcommand list has no `labels` entry. *Check:* one run produces both tables from scratch, and running it twice leaves the same row counts.
+**4. Rename the `features` subcommand to `dataset` and have it rebuild both tables.** One command for the whole modeling dataset, so the 5-subcommand list stays at 5. This is also where `main.py`, the Layout section and Running things get updated, since until this task the command genuinely only builds one table. *Check:* one run produces both tables from scratch, and running it twice leaves the same row counts.
 
 **5. Add pytest and write the first 4 tests.** They cover the steps where a mistake is silent: the FRED one-business-day lag, the Treasury alignment, the closed-label rule, and the holiday fill rule. *Check:* each test fails when you deliberately break the thing it guards. A test that still passes with the code broken is worth nothing, so this is the check that matters, not the count of passing tests.
 
-**6. Run the stage 3 checks end to end.** Against the stored tables, queried from SQL rather than recomputed. *Check:* the newest labeled week is exactly one week behind the newest feature week; a week whose Monday is a market holiday fills on the Tuesday; every labeled row joins to exactly one feature row.
+**6. Run the stage 3 checks end to end.** Against the stored tables, queried from SQL rather than recomputed. *Check:* every labeled row joins to exactly one feature row; a week whose Monday is a market holiday fills on the Tuesday; the newest labeled week is behind the newest feature week by 1 week when prices extend past the last Friday and by 2 weeks when they stop on it, rather than by a fixed number.
 
 
 ## Decisions log
@@ -290,6 +294,8 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 - One row per week per sector, stored in SQLite, keyed on the Friday signal date and the ticker. The fill date is its own column so the backtest does not recompute it.
 - The whole table is dropped and rebuilt every run, for the same reason prices are re-pulled in full: appending would mix rows computed from pre- and post-restatement prices.
 - The backtest and the live prediction both read from this table.
+- Labels live in their own `labels` table, keyed the same way on signal date and ticker, rather than as another column on `features`. Features hold what was knowable at Friday's close; labels hold what happened afterward. Keeping the two tables apart makes that boundary structural instead of a thing to remember, so a query cannot casually train on a column it should not see.
+- One subcommand, `dataset`, drops and rebuilds both tables. It replaces the `features` subcommand rather than adding a sixth, and the name stays accurate if a third table ever joins them.
 
 ### Model and validation
 
@@ -298,7 +304,9 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 - Random forest with fixed hyperparameters and a fixed seed, so runs are reproducible. No hyperparameter search in version 1. **Open: record the chosen values here once set.**
 - XGBoost is not considered until random forest results exist.
 - Growing-window walk-forward: train from the start through the newest allowable row, predict the next week, retrain weekly. Never a random split.
-- The newest allowable training row is the one whose label window has already closed at signal time. At Friday's close of week t, the row for holding week t has a label ending at the next fill open, which is in the future, so it is excluded — the newest usable row is week t-1. There is a test for this.
+- The newest allowable training row is the one whose label window has already closed by the moment the job runs. The job runs Monday before the open, so a label ending at that Monday's open is not yet known either. Counting back from the week being predicted: week t's label ends at next week's fill open, week t-1's label ends at *this* Monday's open, which has not printed when the job runs, and week t-2's label ends at last week's fill open, which has. The newest usable training row is week t-2. There is a test for this.
+- Worked example, for a job running Monday 2026-09-14 before the open. Week t is Friday 2026-09-11, filling 09-14 and selling 09-21 — unknown. Week t-1 is Friday 2026-09-04, which filled Tuesday 09-08 and sells at 09-14's open, the one about to happen — also unknown. Week t-2 is Friday 2026-08-28, which filled 08-31 and sold 09-08, both in the past. Only t-2 is closed.
+- How far the newest labeled week sits behind the newest feature week depends on how far the price data extends, so it is not a fixed number. When prices run past the newest Friday, as they do after a mid-week pull, the gap is 1 week. In real Monday-morning operation the data stops at the previous Friday and the gap is 2 weeks. Both are correct; neither is the invariant to check.
 - First prediction after 5 years of data, counted from the first week where all features are non-null. Given the 52-week beta and sector starts in December 1998, that lands around January 2005 and leaves about 21 years out-of-sample. Note that 2000 through 2002 falls inside the first training window and is never tested; 2008 and 2020 are both out-of-sample.
 
 ### Evaluation
