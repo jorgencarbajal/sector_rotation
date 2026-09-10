@@ -134,7 +134,72 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 4, task 5 of 8.**
+**Current position: stage 4 complete, stage 5 not started.**
+
+All of stage 4's checks passed on 2026-09-10.
+
+**The pipeline is exact.** Chaining 1,445 weekly SPY returns gives 10.073264496941; dividing the last fill open by the first gives the same number to 3.55e-15. The 5e-03 gap against the net figure is the one-off entry cost, to 5e-06.
+
+**The data checks out against the outside world.** Tiingo's adjusted closes, compounded over true calendar years, match published S&P 500 total returns with a mean absolute difference of 0.07 points across 1999 to 2025. 22 of the 27 years agree to 0.0; the largest gap is 0.59 points in 2012.
+
+**And it found a real limitation in `returns_by_year`.** It labels a week by its signal Friday, but that week's money moves the following Monday, so each year is shifted by about a week against a published calendar year. Individual years move by up to 6 points — our 2005 reads +10.4% against a published +4.3% — while the 27-year compound stays within 0.07 points, 8.45% against 8.38%. The shift does not touch the pass rule, which compares lines bucketed identically. It does mean a single year from that table must never be quoted against an outside source; compute it from adjusted closes instead. Recorded in the function's docstring.
+
+**Buy-and-hold trades nothing after entry**: turnover 1.0 in week 1, 0.0 across the following 1,444, total lifetime cost 5e-04. **A sector held 2 weeks running with no price move costs exactly 0.**
+
+**The numbers the pass rule measures against**, at 5 basis points per side:
+
+| line | annual return | Sharpe (zero rate) |
+|---|---|---|
+| SPY buy-and-hold | +8.70% | 0.493 |
+| equal weight | **+9.14%** | **0.541** |
+| momentum baseline | +5.00% | 0.293 |
+
+Equal weight is the line to beat on both metrics.
+
+**The 12-week momentum rank carries no detectable signal on its own.** Measured on 2026-09-10 across all 13,870 sector-weeks that have both a rank and a label, average weekly excess return against SPY, by rank:
+
+| rank | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|
+| mean % | -0.034 | -0.068 | -0.026 | -0.023 | -0.012 | +0.005 | +0.037 | +0.041 | +0.096 |
+| win rate % | 50.3 | 48.3 | 50.2 | 50.6 | 48.4 | 50.0 | 49.4 | 49.1 | 50.7 |
+
+Ranks 10 and 11 have fewer weeks (557 and 416) because they only exist once XLRE and XLC join, so they are not directly comparable.
+
+The best-fit slope across ranks 1 to 11 is +0.011 percentage points per rank — running the wrong way, with weaker momentum doing marginally better. But nothing here is significant: rank 1 sits 0.55 standard errors from zero, rank 2 at 1.28, rank 3 at 0.52, and every win rate is between 48% and 51%. The honest reading is no signal in either direction, not reverse momentum.
+
+Three consequences.
+
+This explains the momentum baseline's failure exactly. It holds 3 sectors that collectively average slightly negative excess return and pays 22% weekly turnover to keep doing it. The loss was not one bad decade — the ranking never had anything in it.
+
+It rules out rank-proportional weighting. Concentrating weight into rank 1 only helps if rank 1 beats rank 2 beats rank 3, and it does not. Adding a weighting knob would have been somewhere to hide rather than a real choice, which is why this was settled with a query rather than by re-running the backtest under several schemes.
+
+And it narrows what stage 5 is actually testing. The measurement above is unconditional, averaged across all 1,433 weeks. The model's bet is that momentum pays only in particular regimes — tight credit spreads, SPY above its 40-week average — and an unconditional average washes exactly that out. That interaction is now the whole thesis rather than one of several, so a stage 5 model that fails should be read as evidence against the interaction specifically, not against the features in general.
+
+Task 7 is done — `main.py backtest` runs the 3 lines, writes the results folder and prints the metrics table, with `--cost-bps` and `--top-n` as options. Running it against a database with no `features` table raises `no features table found - run dataset first` and exits 1 rather than letting SQL complain about a table nobody mentioned. `db.py` gained `table_exists` for that check.
+
+The dispatch table now holds a small function of the parsed arguments per command rather than a bare function, which is what lets `backtest` take options while the other 3 take none. Calling every command with an arguments object it ignores was the alternative.
+
+One ordering mistake: `run_backtest` was appended to the end of the file, after the `if __name__` block, so it was defined too late and the command raised `NameError`. It now sits above `main()`.
+
+Task 6 is done — `write_results` puts 4 files into the git-ignored `results/`: `weekly_returns.csv`, `metrics.csv`, `returns_by_year.csv` and `comparison.png`. A second run overwrites rather than accumulating. matplotlib was added to the dependencies and the renderer is set to `Agg` before pyplot is imported, so the chart draws with no display attached — verified by rendering with `DISPLAY` unset, which is what the server will do under a systemd timer.
+
+The 4 line colours are fixed per line rather than assigned by position, so the 3 existing lines keep their colours when the model line joins them. They are slots 1 to 4 of a palette validated for colourblind separation: worst adjacent pair 9.1 on the protan check against a target of 8. Two of the 4 fall below 3:1 contrast on white, so every line carries a direct label at its right-hand end and identity never rests on colour alone.
+
+Three things were wrong on the first render and fixed after looking at it. Widening the date axis to make room for the labels drew years out to 2032 with no data in them, so the margin is now reserved at the figure level instead. Three translucent drawdown fills stacked in one band were unreadable mud, so drawdowns are drawn as lines. And the log axis was ticking at powers of 10, so it now ticks at 0.5x, 1x, 2x, 5x, 10x.
+
+Task 5 is done — `max_drawdown`, `summarise` and `returns_by_year`. Edge cases check out: a monotone rising series gives a drawdown of exactly 0.0 rather than a floating-point sliver, a flat series gives 0 volatility and a NaN Sharpe rather than dividing by zero, a 100 to 150 to 75 path gives exactly -50%, and per-year returns compound back to the whole-period figure to 12 decimal places.
+
+**The 3 lines, at 5 basis points per side, over 1,445 weeks from 1998-12-25 to 2026-08-28.** Sharpe is the zero-rate figure and must be labeled as such.
+
+| line | annual return | annual vol | Sharpe | max drawdown | avg turnover | hit rate vs SPY | 1 dollar becomes |
+|---|---|---|---|---|---|---|---|
+| SPY buy-and-hold | +8.70% | 17.64% | 0.493 | -55.2% | 0.00% | — | 10.07x |
+| equal weight | +9.14% | 16.89% | 0.541 | -52.9% | 0.68% | 50.2% | 11.24x |
+| momentum baseline | +5.00% | 17.04% | 0.293 | -49.7% | 22.03% | 47.5% | 3.86x |
+
+**The line to beat is equal weight on both metrics the pass rule names**: +9.14% annual return and a 0.541 Sharpe. It leads in 14 of the 29 calendar years, SPY in 9, momentum in 6.
+
+All 3 bottomed on 2009-02-27 from an October 2007 peak. Momentum has the shallowest drawdown of the 3 at -49.7%, so its problem is return rather than risk — it gave up 3.7 points a year against SPY without buying any protection for it.
 
 Task 4 is done — `backtest.py` has `load_feature`, `equal_weights`, and the 3 strategies. The SPY line matches `spy_return` exactly with 0 turnover after entry. Equal weight matches the row mean to 2.8e-17. The momentum baseline's picks disagree with "rank 1 through 3 and has a return" in 0 cells out of 15,895, holding exactly 3 sectors in 1,433 of 1,445 weeks. The other 12 are 1998-12-25 through 1999-03-12, before any 12-week rank exists, and hold cash.
 
@@ -148,7 +213,7 @@ Task 4 is done — `backtest.py` has `load_feature`, `equal_weights`, and the 3 
 
 The momentum baseline loses to SPY by 3.7 points a year at 5 basis points, and by 2.5 even at the realistic 0.75. Excluding the 12 cash weeks does not rescue it: +5.04% against SPY's +8.56% over the same 1,433 weeks. The gap is not a cost artifact either — it loses by 2.5 points gross.
 
-The pass rule reads "the model's Sharpe and net annual return both beat the momentum baseline", on the assumption that momentum is the thing to beat and SPY the easier target. That is inverted here. **Revisit the pass rule before stage 5 runs**, since as written a model could clear it while still losing badly to buying SPY and doing nothing.
+This inverted the pass rule, which named the momentum baseline as the bar. The rule has been changed to require beating the best of the other 3 lines, measured per metric. See the decisions log.
 
 Cost sensitivity is also concentrated entirely in the momentum line, because it is the only one that trades. Its turnover of 22% a week costs 1.2 points of CAGR between 0.75 and 5 basis points, and 2.4 between 0.75 and 10. SPY moves by 0.004 points across the same range.
 
@@ -220,7 +285,7 @@ XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly
 
 Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has a NULL `adj_open`, no FRED row has a non-NULL one, `BAMLH0A0HYM2` still starts 1996-12-31, and every ticker's row count grew rather than shrank.
 
-`main.py` has 3 of its 5 subcommands written: `backfill`, `update`, and `dataset`. The other 2 are deliberately absent because `backtest.py` and `model.py` are empty — each subcommand gets added when the code behind it exists.
+`main.py` has 4 of its 5 subcommands written: `backfill`, `update`, `dataset`, and `backtest`. Only `predict` is absent, because `model.py` is still empty — each subcommand gets added when the code behind it exists.
 
 **Stage 1 — Data foundation.** Add the `adj_open` column, change `store_rows` to match, re-pull all 12 Tiingo tickers in full, refresh FRED, and load the CSV. *Check:* `adj_open` is non-NULL for every equity row and NULL for every FRED row; `BAMLH0A0HYM2` still starts 1996-12-31; row counts per ticker match or exceed the counts in Data status above.
 
@@ -230,7 +295,7 @@ Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has
 
 **Stage 4 — Backtest and baselines.** Build `backtest.py` — fills, holidays, costs, metrics — and run the 3 lines that need no model: SPY buy-and-hold, equal weight across valid sectors, and the momentum baseline. This validates the whole pipeline before the hardest piece exists, and produces the number the model has to beat. *Check:* SPY's annual return over the period is close to a published figure; buy-and-hold shows zero turnover after the first week; a sector held two weeks running incurs no cost.
 
-**Stage 5 — Model.** The walk-forward random forest, the fourth line, and the pass rule evaluated against the momentum baseline. *Check:* no training row's label window ends after the date it is used to predict; two runs with the same seed produce identical results.
+**Stage 5 — Model.** The walk-forward random forest, the fourth line, and the pass rule evaluated against the best of the other 3 lines. *Check:* no training row's label window ends after the date it is used to predict; two runs with the same seed produce identical results.
 
 **Stage 6 — Live job.** Does not start until stage 5's pass rule has been evaluated. The `predict` subcommand, the picks table, weekly scoring of the previous week's pick, phone notification, failure alerting, and reruns that are safe to repeat.
 
@@ -296,7 +361,7 @@ Eight tasks. Stage 4 produces the number the model has to beat, so a backtest th
 
 **7. Add the `backtest` subcommand.** Fourth of the 5, with the cost in basis points and the number of sectors held as options. *Check:* it runs end to end from a clean `results/`, and exits non-zero when the tables are missing.
 
-**8. Run the stage 4 checks end to end.** *Check:* SPY's annual return over the period is close to a published figure for the same span; buy-and-hold shows zero turnover after the first week; a sector held 2 weeks running incurs no cost. Then record the momentum baseline's Sharpe and net annual return in this file, because those 2 numbers are what the pass rule measures the model against.
+**8. Run the stage 4 checks end to end.** *Check:* SPY's annual return over the period is close to a published figure for the same span; buy-and-hold shows zero turnover after the first week; a sector held 2 weeks running incurs no cost. Then record all 3 lines' Sharpe and net annual return in this file, because the best of them per metric is what the pass rule measures the model against.
 
 
 ## Decisions log
@@ -386,8 +451,11 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 - One asymmetry the cost model ignores: a per-share fee costs more in basis points on a cheap ETF than an expensive one, 4.4 times more on XLU than on XLK. Charging a flat rate across all sectors slightly understates the cost of holding the cheap ones.
 - Turnover accounts for weight drift. Each week's actual weights, after a week of price moves has pushed them away from equal, are compared against the new target weights, and the cost is charged on the difference. Comparing target to target would see no change when the same sectors are held 2 weeks running and charge nothing, even though the position really was trimmed back to equal weight. That understates costs on every line equally, so it would leave the comparison between them fair while making all the absolute returns better than reality.
 - The `labels` table carries a `spy_return` column alongside `excess_return`, computed from the same 2 fill opens. A sector's absolute return is then `excess_return + spy_return`, and SPY's own backtest line is `spy_return` directly. Storing it rather than recomputing it in `backtest.py` keeps 2 numbers that must agree from drifting apart.
+- The zero risk-free rate is deliberate and settled. Sharpe here only ranks the 4 lines against each other, and subtracting the same rate from all of them does not change which one leads: equal weight wins at every assumed rate from 0% to 5%. The cost is that the absolute figures come out flattering — SPY's 0.49 would be about 0.38 against a realistic 2% average for this period — which is why the number must always be labeled as a zero-rate Sharpe rather than quoted plainly. Doing it properly would need the 3-month bill (`DTB3`), which is not in `FRED_SERIES`; the 10-year and 2-year already there are the wrong maturity. Only worth adding if a Sharpe is ever quoted outside this project.
 - Metrics after costs, for all 4 lines: annual return, annual volatility, Sharpe ratio with the risk-free rate set to zero and labeled as such, maximum drawdown, average weekly turnover, hit rate as the fraction of weeks beating SPY, and return per calendar year.
-- Pass rule, fixed before the backtest runs: the model's Sharpe and net annual return both beat the momentum baseline, and the model beats the baseline in more than half the calendar years. Beating SPY but not the baseline means momentum works and the model adds nothing. Underperforming is a valid finding.
+- Pass rule, fixed before the backtest runs: the model's Sharpe and net annual return both beat the best of the other 3 lines, and the model beats that same line in more than half the calendar years. Best is measured per metric, so the line to beat on Sharpe need not be the line to beat on return.
+- The rule originally named the momentum baseline as the bar, written on the assumption that momentum would be the hard target and SPY the easy one. Stage 4 showed the opposite: over 1999 to 2026 the momentum baseline returns about 5% a year against SPY's 8.7%, losing by 2.5 points even before costs. Leaving the rule as written would have let a model pass while losing badly to buying SPY and doing nothing.
+- Underperforming every line is a valid finding. So is the stage 4 result on its own: sector momentum did not pay over this period, which is worth knowing whether or not the model works.
 - Feature-freshness diagnostic, to run once stage 4 works: rebuild with the 3 FRED series unlagged, taking each Friday's own value instead of Thursday's, and compare against the lagged build. The unlagged version is not tradeable — Friday's high-yield spread does not post until Monday 10:00am ET — so it is a diagnostic, never a candidate strategy. If the two are indistinguishable, that settles it: neither paying for a real-time ICE feed nor moving the rebalance to Tuesday is worth pursuing.
 - All crisis periods kept — 2000, 2008, 2020 and everything else. No exclusions.
 - Output to a git-ignored `results/`, overwritten each run: a CSV of weekly returns per line, the metrics table, and the comparison chart.
@@ -407,9 +475,9 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
   - `fetch.py` — the full-history re-pull of the 12 Tiingo tickers, the FRED pull, and the CSV load.
   - `features.py` — builds the Group A and Group B columns and writes the features table.
   - `labels.py` — builds the open-to-open excess return and writes the labels table.
-  - `backtest.py` — takes a ranking, applies fills, holidays, and costs, and produces the 4 lines and their metrics. Empty.
+  - `backtest.py` — turns weights into weekly returns and turnover, charges costs, builds the no-model strategies, computes the metrics, and writes the results folder.
   - `model.py` — the walk-forward random forest. Empty.
-- `main.py` — the runner, with subcommands `backfill`, `update`, `dataset`, `backtest`, and `predict`. The first 3 exist.
+- `main.py` — the runner, with subcommands `backfill`, `update`, `dataset`, `backtest`, and `predict`. The first 4 exist.
 - `tests/` — covers the steps where a mistake is silent: the FRED one-business-day lag, the Treasury alignment, the closed-label rule, and the holiday fill rule.
 - `notebooks/main.ipynb` — prototyping only. Working code moves into the package.
 - `data/` — `BAMLH0A0HYM2.csv` is committed and is the only source for the full high-yield spread history. The `.db` files are git-ignored.
@@ -425,7 +493,7 @@ uv run main.py backfill    # build the database from scratch: Tiingo, FRED, and 
 uv run main.py update      # re-pull all 12 tickers in full, refresh FRED
 uv run pytest              # run the tests, under a second, no database needed
 uv run main.py dataset     # drop and rebuild the features and labels tables
-uv run main.py backtest    # run the 4 lines, write results/
+uv run main.py backtest    # run the lines, write results/  (--cost-bps, --top-n)
 uv run main.py predict     # this week's picks
 ```
 

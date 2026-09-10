@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 
 from sector_rotation.config import SECTORS
@@ -189,3 +191,193 @@ def momentum_baseline(
     ranked = ranks.reindex(index=returns.index, columns=SECTORS)
     selected = (ranked <= top_n) & returns[SECTORS].notna()
     return equal_weights(selected, returns.columns)
+
+
+def max_drawdown(net_return: pd.Series) -> float:
+    """
+    Finds the worst peak-to-trough fall the strategy ever suffered, as a negative fraction.
+    Returns 0.0 for a series that never falls below a previous high, and NaN for an empty one.
+    `cumprod` multiplies the running total forward week by week, and `cummax` carries the highest value seen so far down the series.
+    """
+
+    # Grow one dollar week by week, then compare each week against the highest the curve had reached by then
+    curve = (1 + net_return).cumprod()
+    drawdown = curve / curve.cummax() - 1
+
+    # Take the deepest point, clipping a tiny positive rounding error back to a clean 0
+    # A curve that only ever rises has a drawdown of exactly 0, but floating point division can leave it a hair above, and a positive maximum drawdown is a nonsense number to print.
+    return float(min(drawdown.min(), 0.0)) if len(drawdown) else float("nan")
+
+
+def summarise(priced: pd.Series | pd.DataFrame, benchmark: pd.Series | None = None) -> dict[str, float]:
+    """
+    Turns one strategy's weekly results into the summary figures the pass rule is judged on.
+    Returns a dict of annual return, annual volatility, zero-rate Sharpe, max drawdown, average turnover and hit rate; volatility of 0 gives a Sharpe of NaN rather than dividing by zero.
+    `sqrt(52)` scales a weekly standard deviation up to an annual one, because variance adds across independent weeks and standard deviation is its square root.
+    """
+
+    # Pull the weekly net return and turnover out, accepting either the full frame or just the return series
+    net = priced["net_return"] if isinstance(priced, pd.DataFrame) else priced
+    turnover = priced["turnover"] if isinstance(priced, pd.DataFrame) else None
+    net = net.dropna()
+
+    # Compound the weekly returns into a total, then find the steady yearly rate that would have produced it
+    years = (net.index[-1] - net.index[0]).days / 365.25
+    total_growth = float((1 + net).prod())
+    annual_return = total_growth ** (1 / years) - 1
+
+    # Scale the week-to-week standard deviation up to a yearly figure
+    annual_volatility = float(net.std() * (52 ** 0.5))
+
+    # Divide return by volatility, with the risk-free rate taken as zero
+    # A perfectly flat series has no volatility and no meaningful Sharpe, so it returns NaN rather than dividing by zero. The zero rate is deliberate and only valid for ranking lines against each other - see the decisions log.
+    sharpe = annual_return / annual_volatility if annual_volatility > 0 else float("nan")
+
+    summary = {
+        "annual_return": annual_return,
+        "annual_volatility": annual_volatility,
+        "sharpe_rf_zero": sharpe,
+        "max_drawdown": max_drawdown(net),
+        "total_growth": total_growth,
+        "weeks": float(len(net)),
+    }
+
+    # Average how much of the portfolio was traded each week, skipping the first week's full entry
+    # The entry is a one-off cost of starting, not part of how much the strategy trades week to week, and leaving it in would overstate a buy-and-hold line as trading 1/n of itself per week.
+    if turnover is not None:
+        summary["avg_turnover"] = float(turnover.iloc[1:].mean())
+
+    # Count the fraction of weeks the strategy beat the benchmark it is measured against
+    if benchmark is not None:
+        aligned = benchmark.reindex(net.index)
+        summary["hit_rate"] = float((net > aligned).mean())
+
+    return summary
+
+
+def returns_by_year(net_return: pd.Series) -> pd.Series:
+    """
+    Compounds the weekly returns whose signal date falls in each year.
+    Returns a Series indexed by year holding that year's total return; a partial year at either end is compounded from whatever weeks it has.
+    `groupby(index.year)` splits the weeks into years by their signal date, which is what makes each year's figure stand on its own.
+    """
+
+    # Multiply the weeks whose signal date falls in each year together and subtract 1
+    # A single annual return hides whether a strategy won steadily or won once, which is the whole reason for listing years separately.
+    # These years are labelled by signal Friday, not by the dates the money actually moved: a week signalled on the last Friday of December is held into January and still counts as December's year. That shifts each figure by about a week against a published calendar-year return - checked against the S&P 500 total return, the shift moves individual years by up to 6 points while the 27-year compound stays within 0.07. It does not affect the pass rule, which compares lines bucketed identically. Do not quote a single year from here against an outside source; compute it from adjusted closes instead.
+    net = net_return.dropna()
+    return (1 + net).groupby(net.index.year).prod() - 1
+
+
+# Where every backtest run writes its output. Git-ignored, and overwritten rather than added to on each run.
+RESULTS_DIR: Path = Path(__file__).resolve().parent.parent.parent / "results"
+
+# One fixed colour per line, so a line keeps its colour whatever else is on the chart.
+# Assigning by position instead would repaint the other 3 the moment the model line joins them. The 4 hues are slots 1 to 4 of a palette validated for colourblind separation: worst adjacent pair 9.1 on the protan check against a target of 8.
+LINE_COLOURS: dict[str, str] = {
+    "SPY buy-and-hold": "#2a78d6",
+    "equal weight": "#eb6834",
+    "momentum baseline": "#1baf7a",
+    "model": "#eda100",
+}
+
+# Ink for text and for the grid. Labels never wear the series colour - the line arriving at the label is what carries its identity.
+INK: str = "#0b0b0b"
+INK_MUTED: str = "#52514e"
+GRID: str = "#e3e2df"
+
+
+def plot_comparison(priced: dict[str, pd.DataFrame], path: Path) -> None:
+    """
+    Draws one figure comparing the lines: what a dollar grew to on top, and how far each line sat below its own previous high underneath.
+    Returns None, writing a PNG to `path`; a line whose name is absent from LINE_COLOURS raises KeyError rather than being given a made-up colour.
+    `matplotlib.use("Agg")` picks the renderer that writes files without a screen, which is what lets this run over SSH on the server.
+    """
+
+    # Pick the renderer that needs no display, before importing pyplot
+    # pyplot chooses a backend on import, and on a machine with no screen the default fails. Setting it first is what makes this work under a systemd timer.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # Stack two panels sharing one date axis, giving the growth curves 3 times the height of the drawdowns
+    # The right edge is left empty by the figure margin rather than by widening the date axis, which would draw years past the end of the data.
+    figure, (top, bottom) = plt.subplots(2, 1, figsize=(11, 7.5), sharex=True, height_ratios=[3, 1])
+    figure.subplots_adjust(left=0.08, right=0.78, top=0.92, bottom=0.08, hspace=0.08)
+
+    for name, frame in priced.items():
+        net = frame["net_return"].fillna(0.0)
+        curve = (1 + net).cumprod()
+        drawdown = curve / curve.cummax() - 1
+
+        # Draw the growth curve on a log scale and the drawdown below it
+        # Log scale because equal percentage moves have to look equal: over 27 years on a linear axis the first decade is a flat line at the bottom and every pixel of movement belongs to the last few years.
+        # Drawdowns are drawn as lines rather than filled areas, because 3 translucent fills stacked in the same band turn into mud and none of them stays readable.
+        top.plot(curve.index, curve, color=LINE_COLOURS[name], linewidth=1.8, label=name)
+        bottom.plot(drawdown.index, drawdown, color=LINE_COLOURS[name], linewidth=1.2)
+
+        # Write the line's name and final value in the margin beyond where the line ends
+        # Two of these 4 colours fall below 3 to 1 contrast on a white background, so a reader must not have to rely on colour alone to tell the lines apart. The label is in text ink; the line running into it carries the identity.
+        top.annotate(
+            f"  {name}  {curve.iloc[-1]:.1f}x",
+            xy=(curve.index[-1], curve.iloc[-1]),
+            va="center", fontsize=9, color=INK, annotation_clip=False,
+        )
+
+    # Label the log axis at the multiples a reader actually thinks in, rather than at powers of 10
+    top.set_yscale("log")
+    top.set_yticks([0.5, 1, 2, 5, 10])
+    top.set_yticklabels(["0.5x", "1x", "2x", "5x", "10x"])
+    top.minorticks_off()
+    top.set_ylabel("one dollar grows to", color=INK_MUTED, fontsize=9)
+    top.set_title("Sector rotation backtest, net of costs", color=INK, fontsize=12, loc="left")
+
+    bottom.set_ylabel("below previous high", color=INK_MUTED, fontsize=9)
+    bottom.set_yticks([0, -0.2, -0.4, -0.6])
+    bottom.set_yticklabels(["0%", "-20%", "-40%", "-60%"])
+
+    # Push the grid and the frame into the background so the data is what the eye lands on
+    for axis in (top, bottom):
+        axis.grid(True, color=GRID, linewidth=0.7)
+        axis.set_axisbelow(True)
+        for side in ("top", "right", "left"):
+            axis.spines[side].set_visible(False)
+        axis.spines["bottom"].set_color(GRID)
+        axis.tick_params(colors=INK_MUTED, labelsize=9)
+
+    top.legend(loc="upper left", frameon=False, fontsize=9, labelcolor=INK_MUTED)
+
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+
+
+def write_results(priced: dict[str, pd.DataFrame], benchmark: str = "SPY buy-and-hold") -> list[Path]:
+    """
+    Writes every output of one backtest run into the results folder, overwriting whatever was there before.
+    Returns the list of paths written: the weekly figures, the metrics table, the per-year returns and the comparison chart.
+    `mkdir(parents=True, exist_ok=True)` creates the folder when it is missing and does nothing when it is already there.
+    """
+
+    # Create the results folder if this is the first run on this machine
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Write every week of every line side by side, with the line name as the outer column level
+    weekly = pd.concat(priced, axis=1)
+    weekly_path = RESULTS_DIR / "weekly_returns.csv"
+    weekly.to_csv(weekly_path)
+
+    # Summarise each line into one row, measuring hit rate against the benchmark line
+    benchmark_net = priced[benchmark]["net_return"]
+    metrics = pd.DataFrame({name: summarise(frame, benchmark_net) for name, frame in priced.items()}).T
+    metrics_path = RESULTS_DIR / "metrics.csv"
+    metrics.to_csv(metrics_path)
+
+    # Break each line down into calendar years, since one annual figure cannot show whether a line won steadily or won once
+    by_year = pd.DataFrame({name: returns_by_year(frame["net_return"]) for name, frame in priced.items()})
+    by_year_path = RESULTS_DIR / "returns_by_year.csv"
+    by_year.to_csv(by_year_path)
+
+    chart_path = RESULTS_DIR / "comparison.png"
+    plot_comparison(priced, chart_path)
+
+    return [weekly_path, metrics_path, by_year_path, chart_path]

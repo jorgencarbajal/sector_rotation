@@ -1,7 +1,22 @@
 import argparse
 
+import pandas as pd
+
 from sector_rotation.config import ALL_TICKERS, FRED_SERIES, START_DATE, TIINGO_TOKEN
-from sector_rotation.db import init_db
+from sector_rotation.backtest import (
+    DEFAULT_COST_BPS,
+    DEFAULT_TOP_N,
+    apply_costs,
+    equal_weight_sectors,
+    load_feature,
+    load_returns,
+    momentum_baseline,
+    run_strategy,
+    spy_buy_and_hold,
+    summarise,
+    write_results,
+)
+from sector_rotation.db import init_db, table_exists
 from sector_rotation.fetch import (
     export_hy_oas_csv,
     fetch_and_store_ticker,
@@ -126,6 +141,54 @@ def build_dataset() -> None:
     print(f"  {n} rows written, {labels['signal_date'].min()} to {labels['signal_date'].max()}")
 
 
+def run_backtest(cost_bps: float, top_n: int) -> None:
+    """
+    Runs every strategy that needs no model, writes the results folder, and prints the metrics table.
+    Returns None; raises RuntimeError when the features or labels table is missing, which means dataset has not been run.
+    """
+
+    # Stop with a plain message if either modelling table is missing, rather than letting SQL raise about a table nobody mentioned
+    for name in ("features", "labels"):
+        if not table_exists(name):
+            raise RuntimeError(f"no {name} table found - run dataset first")
+
+    # Read every ticker's weekly return and the stored 12-week momentum rank
+    print("Loading returns and ranks")
+    returns = load_returns()
+    ranks = load_feature("mom_rank_12w")
+    print(f"  {len(returns)} weeks, {returns.index[0].date()} to {returns.index[-1].date()}")
+
+    # Build the 3 lines that need no model, then charge each of them the same trading cost
+    print(f"Running strategies at {cost_bps} bp per side, holding the top {top_n}")
+    lines = {
+        "SPY buy-and-hold": spy_buy_and_hold(returns),
+        "equal weight": equal_weight_sectors(returns),
+        "momentum baseline": momentum_baseline(returns, ranks, top_n),
+    }
+    priced = {name: apply_costs(run_strategy(weights, returns), cost_bps) for name, weights in lines.items()}
+
+    # Write the 4 output files and print where they went
+    print("Writing results")
+    for path in write_results(priced):
+        print(f"  {path}")
+
+    # Print the metrics so a run says something without opening a file
+    # Sharpe is the zero-rate figure and is labelled as such here, because quoting it plainly would overstate it - see the decisions log.
+    metrics = pd.DataFrame({name: summarise(frame, priced["SPY buy-and-hold"]["net_return"]) for name, frame in priced.items()}).T
+    print()
+    print(metrics[["annual_return", "annual_volatility", "sharpe_rf_zero", "max_drawdown", "avg_turnover", "hit_rate"]].to_string(
+        formatters={
+            "annual_return": "{:+.2%}".format,
+            "annual_volatility": "{:.2%}".format,
+            "sharpe_rf_zero": "{:.3f}".format,
+            "max_drawdown": "{:.1%}".format,
+            "avg_turnover": "{:.2%}".format,
+            "hit_rate": "{:.1%}".format,
+        }
+    ))
+    print("\nSharpe assumes a risk-free rate of zero and is only valid for ranking these lines against each other.")
+
+
 def main() -> int:
     """
     Reads the subcommand off the command line and runs it.
@@ -139,11 +202,20 @@ def main() -> int:
     subparsers.add_parser("backfill", help="build the database from nothing: schema, CSV, both APIs")
     subparsers.add_parser("update", help="refresh an existing database from both APIs")
     subparsers.add_parser("dataset", help="drop and rebuild the features and labels tables from the prices table")
+    backtest_parser = subparsers.add_parser("backtest", help="run every strategy that needs no model and write the results folder")
+    backtest_parser.add_argument("--cost-bps", type=float, default=DEFAULT_COST_BPS, help="cost of one side of a trade, in basis points")
+    backtest_parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help="how many sectors the portfolio holds")
 
     # Read the command line, look the command up in the table, and call it
+    # Each entry is a small function of the parsed arguments, which is what lets backtest take options while the other 3 take none. Writing it as `commands[args.command]()` would mean giving every command an argument it ignores.
     args = parser.parse_args()
-    commands = {"backfill": backfill, "update": update, "dataset": build_dataset}
-    commands[args.command]()
+    commands = {
+        "backfill": lambda a: backfill(),
+        "update": lambda a: update(),
+        "dataset": lambda a: build_dataset(),
+        "backtest": lambda a: run_backtest(a.cost_bps, a.top_n),
+    }
+    commands[args.command](args)
 
     return 0
 

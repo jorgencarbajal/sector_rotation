@@ -37,3 +37,19 @@ def init_db() -> None:
     conn.commit()
     conn.close()
     print(f"Database ready at {DB_PATH}")
+
+def table_exists(name: str) -> bool:
+    """
+    Checks whether a table of that name exists in the database.
+    Returns True or False; a database file that does not exist yet is created empty by the connection and reports False.
+    `sqlite_master` is the table SQLite keeps about its own tables, so querying it is how you ask what is there.
+    """
+
+    # Look the name up in SQLite's own catalogue of tables and close the connection
+    conn = get_conn()
+    found = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    conn.close()
+
+    return found is not None
