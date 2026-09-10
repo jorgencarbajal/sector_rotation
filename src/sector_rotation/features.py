@@ -29,7 +29,7 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     "rel_mom_4w",
     "rel_mom_12w",
     "rel_mom_26w",
-    "mom_rank_12w",
+    "mom_pct_12w",
     "vol_20d",
     "vol_60d",
     "beta_52w",
@@ -122,17 +122,23 @@ def relative_momentum(
     return result
 
 
-def momentum_rank(momentum: pd.DataFrame) -> pd.DataFrame:
+def momentum_percentile(momentum: pd.DataFrame) -> pd.DataFrame:
     """
-    Ranks the sectors against each other within each week, giving rank 1 to the strongest.
-    Returns a DataFrame the same shape as the input, holding whole numbers 1 through however many sectors have a value that week, and NaN wherever the input was NaN.
-    `rank(axis=1)` ranks across each row rather than down each column, so every week is ranked on its own.
+    Scores each sector against the others in its week by what fraction of them it beat, 1.0 for the strongest and 0.0 for the weakest.
+    Returns a DataFrame the same shape as the input, holding values from 0 to 1, and NaN wherever the input was NaN.
+    `rank(axis=1)` ranks across each row rather than down each column, so every week is scored on its own.
     """
 
-    # Rank each week's sectors from strongest to weakest, leaving a sector out of the ranking entirely when it has no momentum value that week
+    # Rank each week's sectors from strongest to weakest, leaving a sector out entirely when it has no momentum value that week
     # NaN cells stay NaN and are not counted, so a week where only 9 sectors have 12 weeks of history ranks them 1 through 9 - that is the "use only the sectors valid that week" rule, with nothing to write.
-    # method="first" breaks ties by column order so the output is always whole numbers 1 through n. The default averages ties into values like 3.5, which would break the promise that this column holds integers.
-    return momentum.rank(axis=1, ascending=False, method="first")
+    # method="first" breaks ties by column order, so the ranks are always whole numbers 1 through n. The default averages ties into values like 3.5.
+    ranks = momentum.rank(axis=1, ascending=False, method="first")
+
+    # Convert the rank into the fraction of that week's sectors it beat
+    # A raw rank does not mean the same thing across the panel: 835 of the 1,326 trainable weeks hold 9 sectors and 356 hold 11, so rank 5 of 9 and rank 5 of 11 are different positions wearing the same number. Dividing by the count makes every week comparable, which matters because the model trains across all of them at once.
+    # (n - rank) / (n - 1) puts the strongest at exactly 1.0 and the weakest at exactly 0.0 for any n. The guard covers a week with a single valid sector, which would otherwise divide by zero.
+    count = momentum.notna().sum(axis=1)
+    return (-ranks).add(count, axis=0).div((count - 1).where(count > 1), axis=0)
 
 
 def realized_volatility(
@@ -203,8 +209,10 @@ def align_fred(fred_daily: pd.DataFrame, weekly_index: pd.DatetimeIndex) -> pd.D
     # Step every Friday back one business day, which lands on the Thursday
     lagged_dates = weekly_index - pd.tseries.offsets.BDay(FRED_LAG_BUSINESS_DAYS)
 
-    # Look up the newest observation dated on or before each of those Thursdays
-    aligned = fred_daily.reindex(lagged_dates, method="ffill")
+    # Carry each series' last real value down over any day it has no observation, then look up each of those Thursdays
+    # Both steps are needed and they cover different cases. reindex with ffill walks back when the date is missing from the index; the ffill on values walks back when the date is there but that series has no reading.
+    # The second case is the one that bit: the frame holds 3 series pivoted together, so a date appears whenever any of them published. On Thanksgiving 2000 the credit spread had a value and both Treasuries did not, so the row existed with 2 NaN in it and reindex returned it untouched. That silently emptied the yield-curve slope in 29 weeks, and its weekly change in twice as many, costing 67 weeks of training data.
+    aligned = fred_daily.ffill().reindex(lagged_dates, method="ffill")
 
     # Put the Friday dates back on the rows so this frame joins against the other features
     aligned.index = weekly_index
@@ -280,7 +288,7 @@ def build_feature_table(
         "rel_mom_4w": momentum[4],
         "rel_mom_12w": momentum[12],
         "rel_mom_26w": momentum[26],
-        "mom_rank_12w": momentum_rank(momentum[12]),
+        "mom_pct_12w": momentum_percentile(momentum[12]),
         "vol_20d": volatility[20],
         "vol_60d": volatility[60],
         "beta_52w": rolling_beta(weekly),

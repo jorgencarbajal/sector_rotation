@@ -10,13 +10,14 @@ from sector_rotation.backtest import (
     equal_weight_sectors,
     load_feature,
     load_returns,
-    momentum_baseline,
+    load_predictions,
+    top_n_by_score,
     run_strategy,
     spy_buy_and_hold,
     summarise,
     write_results,
 )
-from sector_rotation.db import init_db, table_exists
+from sector_rotation.db import init_db, table_columns, table_exists
 from sector_rotation.fetch import (
     export_hy_oas_csv,
     fetch_and_store_ticker,
@@ -24,6 +25,7 @@ from sector_rotation.fetch import (
     load_hy_oas_csv,
 )
 from sector_rotation.features import (
+    FEATURE_COLUMNS,
     build_feature_table,
     fill_dates,
     load_daily_prices,
@@ -152,19 +154,34 @@ def run_backtest(cost_bps: float, top_n: int) -> None:
         if not table_exists(name):
             raise RuntimeError(f"no {name} table found - run dataset first")
 
-    # Read every ticker's weekly return and the stored 12-week momentum rank
-    print("Loading returns and ranks")
-    returns = load_returns()
-    ranks = load_feature("mom_rank_12w")
-    print(f"  {len(returns)} weeks, {returns.index[0].date()} to {returns.index[-1].date()}")
+    # Stop too if the features table predates a change to the feature list, rather than failing several steps later on a missing column
+    # Checking the table exists is not enough on its own: a rename leaves a table that is present, readable and wrong, and the error you get instead is SQL complaining about a column the code asked for.
+    missing = [name for name in FEATURE_COLUMNS if name not in table_columns("features")]
+    if missing:
+        raise RuntimeError(f"features table is out of date, missing {', '.join(missing)} - run dataset first")
 
-    # Build the 3 lines that need no model, then charge each of them the same trading cost
+    # Read every ticker's weekly return, the stored 12-week momentum percentile, and the walk-forward predictions if a model run has happened
+    print("Loading returns and scores")
+    returns = load_returns()
+    momentum = load_feature("mom_pct_12w")
+    predictions = load_predictions()
+
+    # Cut every line back to the weeks the model can also cover, so the 4 are compared over identical history
+    # Without this the model would be judged on 2005 onward while the other 3 carry 1999 onward, and those 6 extra years contain the dot-com crash. The pass rule compares lines against each other, so they have to run over the same weeks.
+    if not predictions.empty:
+        returns = returns.loc[returns.index >= predictions.index.min()]
+        print(f"  restricted to the model's period, {len(returns)} weeks")
+    print(f"  {returns.index[0].date()} to {returns.index[-1].date()}")
+
+    # Build the lines that need no model, then the model line when predictions exist, then charge them all the same trading cost
     print(f"Running strategies at {cost_bps} bp per side, holding the top {top_n}")
     lines = {
         "SPY buy-and-hold": spy_buy_and_hold(returns),
         "equal weight": equal_weight_sectors(returns),
-        "momentum baseline": momentum_baseline(returns, ranks, top_n),
+        "momentum baseline": top_n_by_score(returns, momentum, top_n),
     }
+    if not predictions.empty:
+        lines["model"] = top_n_by_score(returns, predictions, top_n)
     priced = {name: apply_costs(run_strategy(weights, returns), cost_bps) for name, weights in lines.items()}
 
     # Write the 4 output files and print where they went

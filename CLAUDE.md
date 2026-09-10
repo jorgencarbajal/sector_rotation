@@ -125,7 +125,7 @@ Row counts and date ranges as of the pull on 2026-09-09:
 | `XLRE` | 2,744 | 2015-10-08 to 2026-09-08 |
 | `XLC` | 2,066 | 2018-06-19 to 2026-09-08 |
 
-The database also holds a `features` table of 14,013 rows by 14 columns and a `labels` table of 14,002 rows by 4, both dropped and rebuilt by `main.py dataset`.
+The database also holds a `features` table of 14,013 rows by 14 columns and a `labels` table of 14,002 rows by 4, both dropped and rebuilt by `main.py dataset`, plus a `predictions` table of 11,081 rows written by the stage 5 walk-forward run.
 
 The Treasury series ending 4 days before the equities is the documented one-business-day lag, not a gap. 2026-09-07 was Labor Day, so the newest equity bar is Tuesday 2026-09-08, and Tuesday's Treasury values do not reach FRED until Wednesday afternoon.
 
@@ -134,7 +134,118 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 4 complete, stage 5 not started.**
+**Current position: stage 5 complete. The model failed the pass rule, and the diagnostics say why. Stages 6 and 7 should not proceed as planned — see the verdict below.**
+
+Task 7 is done, plus 2 diagnostics beyond it.
+
+**Feature importance is almost perfectly flat, which is itself the finding.** Averaged over 21 fits spread across the walk-forward: `rel_mom_12w` 0.130, `rel_mom_26w` 0.124, `rel_mom_4w` 0.122, `beta_52w` 0.121, `vol_20d` 0.107, `hy_oas` 0.106, `vol_60d` 0.104, `curve_slope` 0.094, `curve_slope_change` 0.054, `mom_pct_12w` 0.031, `spy_above_40w` 0.006. An even split across 11 features would be 0.091. Nine of them sit between 0.054 and 0.130 — the forest split on everything roughly equally because nothing was more useful than anything else. The 2 low values are artifacts of how the measure works rather than evidence those columns are worse: impurity importance favours continuous high-cardinality features, and `mom_pct_12w` takes only 9 to 11 distinct values a week while `spy_above_40w` is binary with a single possible split. Group A totals 0.740 against Group B's 0.260, close to the 7-to-4 split you would get from counting columns.
+
+**The model loses in every regime, which kills the version 1 thesis directly.** The bet was that momentum pays inside particular regimes even though it does not on average. Weekly return minus SPY's, sliced by the regime features that were included to detect exactly this:
+
+| slice | weeks | mean vs SPY | standard errors |
+|---|---|---|---|
+| SPY above its 40-week average | 903 | -6.43 bp | -1.85 |
+| SPY below it | 229 | -13.54 bp | -1.16 |
+| credit spread tightest third | 380 | -4.34 bp | -0.68 |
+| middle third | 378 | -7.88 bp | -1.43 |
+| widest third | 374 | -11.45 bp | -1.64 |
+
+Every slice is negative. None is significant on its own, but there is no regime in which this model adds anything.
+
+**The clearest single result: performance improves monotonically as you act on the model less.** Same predictions, no refitting, only the number of sectors held changes:
+
+| held | annual return | Sharpe | max drawdown | turnover |
+|---|---|---|---|---|
+| top 1 | +5.27% | 0.210 | -64.5% | 53.67% |
+| top 3 | +6.05% | 0.314 | -66.0% | 40.37% |
+| top 5 | +7.47% | 0.418 | -55.0% | 29.17% |
+| top 7 | +9.09% | 0.518 | -54.5% | 17.48% |
+| top 9 | +10.04% | 0.588 | -52.9% | 5.26% |
+| top 11 | +10.38% | 0.608 | -52.9% | 0.63% |
+| SPY | +10.89% | 0.626 | -55.2% | 0.00% |
+
+Every sector added improves both return and Sharpe. At top 11 the model's ranking is doing nothing at all, since holding all 11 is equal weight — and that still trails SPY. The ranking has negative value: the more of it you use, the worse you do, and the best amount to use is none. This is about as conclusive as a backtest gets.
+
+**The 4 regime features were worse than useless.** The decisions log says to judge them by whether removing them hurts rather than by their standalone importance, so a second full walk-forward was run on the 7 Group A features alone.
+
+| features | annual return | Sharpe | max drawdown | turnover |
+|---|---|---|---|---|
+| all 11 | +6.05% | 0.314 | -66.0% | 40.37% |
+| Group A only, 7 | +6.85% | 0.356 | -62.8% | 41.57% |
+| SPY | +10.89% | 0.626 | -55.2% | 0.00% |
+
+Removing them **improved** every measure — return, Sharpe and drawdown. They were not merely contributing nothing; on this data they were actively harmful, giving the forest 4 more columns to find spurious structure in. The 2 models' predictions correlate 0.84 and agree on all 3 picks in 415 of 1,132 weeks, so the regime columns did change the picks, just for the worse.
+
+This closes the version 1 thesis completely. The bet was that the regime features would make momentum work by telling the model when to trust it. They did not merely fail to help — the model was better off without them. Neither line comes close to SPY either way.
+
+Task 6 is done. The pass rule was written down before the backtest ran and is applied here unchanged.
+
+**The result, over 2004-12-24 to 2026-08-28:**
+
+| test | bar | model | |
+|---|---|---|---|
+| annual return | SPY +10.89% | +6.05% | FAIL |
+| Sharpe, zero rate | SPY 0.626 | 0.314 | FAIL |
+| calendar years beating SPY | 12 of 23 | 7 of 23 | FAIL |
+
+The decisions log says to re-run at 0.75 basis points, the realistic Interactive Brokers floor, before discarding a model that fails at 5. That was done and changes nothing: +7.97% against SPY's +10.90%, Sharpe 0.413 against 0.626, and 10 calendar years of 23. The model fails all 3 tests at both cost levels.
+
+It is also the worst line on risk, not only on return: a 66.0% maximum drawdown against SPY's 55.2%, and 19.31% annual volatility against 17.41%. It turns over 40.4% of itself per week, nearly twice the momentum baseline. It trades the most, earns the least, and falls the furthest.
+
+**Reproducibility, with one honest caveat.** Two runs with the same seed are not bit-identical — they differ by 8.7e-19, or 1.7e-14 in relative terms, because `n_jobs=-1` averages 500 trees in a nondeterministic order. The rankings and the top-3 picks are identical across runs, which is what the backtest depends on. Setting `n_jobs=1` would make it bit-identical at the cost of speed; it has not been changed.
+
+**Where the model did and did not fail.** The per-year table shows it is not uniformly bad: +25.2% against SPY's +10.4% in 2005, +29.1% against +24.9% in 2021. It loses on the big years and on the crash — -42.9% in 2008 against SPY's -33.1%, and -0.9% against +19.3% in 2020. Concentrating into 3 sectors raises the stakes on every pick, and the picks were not good enough to justify it.
+
+Read this together with the stage 4 finding. The 12-week momentum rank carries no unconditional signal, and the model's bet was that momentum pays inside particular regimes. That bet is now tested and lost. The evidence is against the regime interaction as specified in version 1, not against the idea of features in general — but nothing here suggests a small change would rescue it.
+
+Task 5 is done — the model is the 4th line. `momentum_baseline` was renamed `top_n_by_score`, since one function now serves both callers: the baseline hands it the 12-week momentum percentile, the model hands it the predicted excess return. `load_predictions` returns an empty frame when no walk-forward run has happened, so `backtest` simply omits the line.
+
+**Every line is now cut back to the model's period when the model is present.** Without that the model would be judged on 2005 onward while the others carried 1999 onward, and those 6 extra years hold the dot-com crash. The 3 baselines therefore read differently from the stage 4 table: over 2004-12-24 to 2026-08-28 rather than 1998-12-25 to 2026-08-28.
+
+The weights check out: all 1,132 weeks hold exactly 3 sectors at exactly one third each, every row sums to 1, and the picks are the 3 highest predictions. The model holds the same 3 sectors as the momentum baseline in only 25 of 1,132 weeks, 2.2%, so it is genuinely choosing differently rather than reproducing momentum.
+
+**The result, at 5 basis points per side over 2004-12-24 to 2026-08-28:**
+
+| line | annual return | annual vol | Sharpe | max drawdown | avg turnover |
+|---|---|---|---|---|---|
+| SPY buy-and-hold | **+10.89%** | 17.41% | **0.626** | -55.2% | 0.00% |
+| equal weight | +10.32% | 17.06% | 0.605 | -52.9% | 0.63% |
+| momentum baseline | +6.54% | 17.05% | 0.383 | -49.7% | 21.66% |
+| model | +6.05% | 19.31% | 0.314 | -66.0% | 40.37% |
+
+The model is last of the 4 on return and on Sharpe, and it is the only line with a drawdown worse than SPY's — 66.0% against 55.2%. It also turns over 40.4% of itself per week, nearly twice the momentum baseline, so it trades the most and earns the least. Note that over this period SPY leads equal weight, reversing the stage 4 ordering; the 6 years the restriction removes are what made equal weight look better.
+
+Task 4 is done — the cutoff was inline in the walk-forward loop with nothing a test could address, so it is now `training_slice(data, week)` and `tests/test_model.py` covers it from both directions. 9 tests passing.
+
+Both directions matter. A test asserting only that the previous week is excluded would pass if the function returned nothing at all, so a second test asserts the week two before survives and that exactly 2 of 4 rows do. Mutating the lag proves each catches what it is for: loosening it from 14 days to 7 — the leak itself — fails both tests, and tightening it to 21 fails the second alone. The refactor changed no output: predictions recomputed on a slice match the stored ones to 4.34e-19.
+
+Task 3 is done — `walk_forward_predictions` refits the forest once per week and predicts that week's sectors, and `write_predictions` stores them. 15.2 minutes for 1,132 fits, producing 11,081 predictions from 2004-12-24 to 2026-08-28. The training set grows from 3,231 rows at the start to 13,056 at the end. 261 warmup weeks get no prediction, as intended.
+
+Every check passed. All 1,132 predictable weeks got predictions and no others; every prediction matches a trainable row with 0 spurious and 0 duplicated; and across all 1,132 weeks the smallest gap between a prediction week and its newest training row is exactly 14 days, which is the closed-label rule holding everywhere rather than on the slice it was first checked on.
+
+Two implementation choices worth keeping. The cutoff is measured in calendar days rather than in rows, so a missing week cannot silently shift it — which nearly mattered, since the panel had 67 missing weeks until the `align_fred` fix the same day. And each week gets its own forest which is then discarded, which is what makes every prediction genuinely out of sample and also why this takes a quarter of an hour.
+
+**The predictions carry almost no signal, and this is the result rather than a bug.** Correlation with the actual excess return is -0.0001 across all 11,081 rows. The predictions have a standard deviation of 0.144% against the label's 1.886% — the forest is 13 times less variable than what it is predicting, which is what a model does when it finds little to key on and falls back toward the mean. Whether that still ranks well enough to pick 3 sectors is the question task 5 answers: ranking needs only the ordering to be right, not the magnitude.
+
+**A leakage-adjacent bug in `align_fred` was found on 2026-09-10 while preparing the walk-forward loop, and fixed.** The FRED frame holds 3 series pivoted together, so a date appears in its index whenever *any* of them published. On Thanksgiving 2000 the credit spread had a value and both Treasuries did not, leaving a row that existed with 2 NaN in it. `reindex(method="ffill")` walks back only when the date is missing from the index — the row was there, so it was returned untouched, holes included. That emptied `curve_slope` in 29 weeks and `curve_slope_change` in twice as many, and since the Group B columns are identical across sectors, every affected week lost all 11 rows. The trainable set was 12,781 rows across 1,326 weeks with 67 weeks missing entirely; it is now 13,430 rows across 1,393 weeks with none missing.
+
+The fix is `fred_daily.ffill().reindex(lagged_dates, method="ffill")`. Both steps are needed and they cover different cases: the reindex walks back when the date is absent, the value ffill walks back when the date is present but that series has no reading.
+
+**My stage 2 task 6 verification did not catch this, and the reason is worth remembering.** That check measured staleness with `fred[s].loc[:tgt].last_valid_index()`, which skips NaN — so it measured what the alignment *should* do rather than what `align_fred` returns. It validated a reimplementation. The same blind spot was in the test, which deleted the Thursday row entirely, exercising only the case that already worked. A 7th test now covers a row that is present but empty, and it fails when the fix is reverted. Staleness has been re-measured against the function's actual output: 0 NaN cells across 4,491 lookups, worst reach-back still 4 days.
+
+Any check that reimplements the logic it is checking proves only that two pieces of code agree. Compare against the function, against raw inputs, or against an outside source.
+
+The rank feature became a percentile on 2026-09-10, before the model was fitted — see the decisions log. `momentum_rank` is now `momentum_percentile` and the column is `mom_pct_12w`. Verified: every week's strongest sector scores exactly 1.0 and its weakest exactly 0.0, whatever the sector count, so a 9-sector week and an 11-sector week now sit on one scale. `momentum_baseline` ranks whatever score it is handed rather than reading a stored rank, which is what lets stage 5 pass it the model's predicted excess return instead.
+
+The momentum baseline's numbers are unchanged to the last decimal — largest difference across every metric and every line is 0.0 — which is the check that the change was a relabelling rather than a different strategy. A percentile is a monotone transform of the rank within each week, so the picks could not move.
+
+Task 2 is done — `model.py` has `load_training_data`, joining `features` to `labels` and dropping rows with any gap. 12,781 rows by 14 columns across 1,326 weeks, 1999-12-24 to 2026-08-28, matching the count recorded at the end of stage 3 exactly. 0 NaN cells anywhere. The newest week 2026-09-04 is absent, as it should be — it has features but no label, and the inner join removes it without needing a rule.
+
+The panel is ragged in a way worth remembering: before the `align_fred` fix, 835 weeks carried 9 sectors, 135 carried 10 and 356 carried 11. Nearly two thirds of the training data predates XLRE, so the model spends most of its history choosing among 9. The label centres where an excess return has to: mean +0.008%, median -0.012%, standard deviation 1.99%.
+
+Task 1 is done — scikit-learn 1.9.1 added to the dependencies, and the hyperparameters chosen and written into the decisions log before any model was fitted. Both open decisions settled: predictions get their own table, and the hyperparameters are fixed at 500 trees, no depth limit, 50 samples minimum per leaf, a third of the features per split, seed 42.
+
+Stage 4 is complete.
 
 All of stage 4's checks passed on 2026-09-10.
 
@@ -364,6 +475,25 @@ Eight tasks. Stage 4 produces the number the model has to beat, so a backtest th
 **8. Run the stage 4 checks end to end.** *Check:* SPY's annual return over the period is close to a published figure for the same span; buy-and-hold shows zero turnover after the first week; a sector held 2 weeks running incurs no cost. Then record all 3 lines' Sharpe and net annual return in this file, because the best of them per metric is what the pass rule measures the model against.
 
 
+### Stage 5 task list
+
+Seven tasks. This is the stage the whole project exists to run, and also the one where a mistake is most flattering: a model trained on a label it should not have seen produces a backtest that looks extraordinary and is worth nothing.
+
+**1. Add scikit-learn and record the hyperparameters.** Fixed values and a fixed seed, no search. *Check:* the chosen values are written into the decisions log before any model is fitted, which is what stops them becoming something tuned against the answer.
+
+**2. Load the trainable set.** Join `features` to `labels`, keeping only rows with all 11 features and a label. *Check:* 12,781 rows starting 1999-12-24, matching the count already recorded; no row has a NaN in any feature or in the label.
+
+**3. Run the walk-forward loop.** For each prediction week, train on every row whose label window closed before the job would have run, then predict that week's 11 sectors. Growing window, retrained weekly, first prediction after 5 years of complete rows. *Check:* the first prediction lands around the end of 2004; the number of prediction weeks matches the number of weeks in the trainable set after that date; every predicted week has one value per valid sector.
+
+**4. Test the closed-label rule.** The newest usable training row is week t-2, because week t-1's label ends at the Monday open the job is about to trade into. *Check:* the test fails when the cutoff is loosened to t-1. A test that passes at both cutoffs is not testing anything.
+
+**5. Turn predictions into the fourth line.** Rank each week's predictions, hold the top N equal weight, and run it through the same `run_strategy` and `apply_costs` as the other 3. *Check:* the weights sum to 1 and hold exactly N sectors; the line appears on the chart in the reserved 4th colour without the other 3 changing colour.
+
+**6. Evaluate the pass rule and record the result.** The model's Sharpe and net annual return must both beat equal weight's 0.541 and +9.14%, and beat it in more than half the calendar years. *Check:* two runs with the same seed produce identical predictions to the last decimal. Record the outcome in this file whichever way it goes — underperforming is a valid finding, and the stage 4 result already says the unconditional momentum signal is absent, so a failure here is evidence against the regime interaction specifically rather than against the features in general.
+
+**7. Look at what the model used.** Feature importance across the walk-forward fits, and the Group B columns judged by whether removing them hurts rather than by their standalone importance. *Check:* the Group B columns are expected to look near-worthless alone; the question is whether dropping all 4 changes the result.
+
+
 ## Decisions log
 
 Decisions are recorded here and nowhere else. When a decision is locked in during a conversation, remind the user to add it here.
@@ -400,7 +530,9 @@ Decisions are recorded here and nowhere else. When a decision is locked in durin
 Group A, sector-specific, carrying the ranking information:
 
 - Relative momentum against SPY at 4, 12, and 26 weeks. Resample daily to weekly first (`W-FRI`, `.last()`), then `pct_change(n, fill_method=None)`. The order matters: resampling first is what makes `n` mean weeks rather than days. `fill_method=None` stops pandas fabricating 0% returns across the ragged starts of XLRE and XLC, leaving early rows `NaN`. Verified on raw momentum before the switch to relative — XLC's first valid values at 4, 12, and 26 weeks land on 2018-07-20, 2018-09-14, and 2018-12-21.
-- Cross-sectional rank of 12-week momentum, 1 being best, running to however many sectors have valid data that week. Kept despite deriving from a column already present, because a rank of 1 means the same thing in a calm year and a crash year while a raw return does not, and the model trains across both. Computable from raw or relative momentum — within a week the two order identically.
+- Cross-sectional standing in 12-week momentum, stored as `mom_pct_12w`: the fraction of that week's valid sectors this one beat, 1.0 for the strongest and 0.0 for the weakest. Kept despite deriving from a column already present, because a position within the week means the same thing in a calm year and a crash year while a raw return does not, and the model trains across both. Computable from raw or relative momentum — within a week the two order identically.
+- It is a percentile rather than the integer rank it started as, changed 2026-09-10. A raw rank does not mean the same thing across the panel: 835 of the 1,326 trainable weeks hold 9 sectors and 356 hold 11, so rank 5 of 9 and rank 5 of 11 are different positions wearing the same number, and the model trains across all of them at once. `(n - rank) / (n - 1)` puts the strongest at exactly 1.0 and the weakest at exactly 0.0 for any n. The alternative considered was training only on weeks with a consistent sector count, which would have discarded 835 weeks to fix a single column.
+- The rename from `mom_rank_12w` matters: the column holds 0.0 to 1.0, and leaving the old name on it would have read as a rank. Any earlier note in this file that measures something "by rank" was written against the integer version.
 - Realized volatility from daily returns over the trailing 20 and 60 trading days, computed on daily data and sampled at each Friday. Not from weekly returns, and not annualized.
 - Rolling beta to SPY over the trailing 52 weekly returns.
 
@@ -433,9 +565,16 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 
 - Regression, not classification. The label is the sector's return from fill open to next fill open, minus SPY's return over the same window.
 - Rank the predictions each week, hold the top N equal weight. N is a parameter, default 3.
-- Random forest with fixed hyperparameters and a fixed seed, so runs are reproducible. No hyperparameter search in version 1. **Open: record the chosen values here once set.**
+- Random forest with fixed hyperparameters and a fixed seed, so runs are reproducible. No hyperparameter search in version 1. Chosen on 2026-09-10, before any model was fitted, and not to be changed after seeing a result: `n_estimators=500`, `max_depth=None`, `min_samples_leaf=50`, `max_features=1/3`, `random_state=42`, `n_jobs=-1`. Fitted with scikit-learn 1.9.1.
+- `min_samples_leaf=50` is the one that matters. The trainable set is 12,781 rows but its effective size is far smaller — within a week all sectors share the 4 regime values, and 26-week momentum overlaps its previous value by 25 of 26 weeks. Small leaves would memorise that structure. `max_features=1/3` decorrelates the trees, which is what makes a forest better than one deep tree.
+- Searching for hyperparameters is out for version 1, and the reason is worth keeping. Searching once over the whole 27 years and then backtesting on those same years means the settings already know the answer, which is exactly what the walk-forward structure exists to prevent. Searching inside each training window would be leak-free, but it multiplies roughly 1,100 fits by the size of the grid, and aggregating the per-window winners and re-running with them leaks again — that aggregate was chosen knowing every window's outcome. A per-window search is worth running later as a diagnostic of whether the model is stable, never as a way to pick the settings a reported result was produced with.
+- Predictions are stored in their own `predictions` table alongside `features` and `labels`. A sector-week's predicted excess return does not depend on how many sectors the portfolio holds, so storing them lets `--top-n` be re-run in seconds rather than refitting the forest 1,100 times.
 - XGBoost is not considered until random forest results exist.
 - Growing-window walk-forward: train from the start through the newest allowable row, predict the next week, retrain weekly. Never a random split.
+- Growing rather than sliding, decided 2026-09-10 with the reasoning below so it is not revisited on instinct. The two are a trade between different errors, not between more and less overfitting. More training data reduces overfitting rather than causing it: with the leaf size fixed at 50 samples, every extra row makes each leaf better supported and memorisation harder, so a model trained on 2,400 rows overfits more than the same model trained on 12,000.
+- The real argument for a sliding window is staleness, not overfitting. A growing window means the 2026 model is still shaped by 1999 to 2010, and if the relationship between these features and next week's returns has genuinely changed — different rate regime, different index concentration — that old data is actively misleading rather than merely useless. A sliding window forgets, so it adapts faster.
+- Growing wins here on effective sample size, which is the binding constraint in this project. A 5-year sliding window is about 260 weeks, and the 52-week beta overlaps its own previous value by 51 of 52 weeks, so 260 weeks holds roughly 5 genuinely independent observations of that feature. The growing window by 2026 holds about 25. Neither is generous; one is workable and one is not.
+- A sliding-window run is worth doing later as a labelled diagnostic of the staleness worry. It is not a second candidate to be chosen between after seeing both results — that is the same trap avoided on the rank-weighting question.
 - The newest allowable training row is the one whose label window has already closed by the moment the job runs. The job runs Monday before the open, so a label ending at that Monday's open is not yet known either. Counting back from the week being predicted: week t's label ends at next week's fill open, week t-1's label ends at *this* Monday's open, which has not printed when the job runs, and week t-2's label ends at last week's fill open, which has. The newest usable training row is week t-2. There is a test for this.
 - Worked example, for a job running Monday 2026-09-14 before the open. Week t is Friday 2026-09-11, filling 09-14 and selling 09-21 — unknown. Week t-1 is Friday 2026-09-04, which filled Tuesday 09-08 and sells at 09-14's open, the one about to happen — also unknown. Week t-2 is Friday 2026-08-28, which filled 08-31 and sold 09-08, both in the past. Only t-2 is closed.
 - How far the newest labeled week sits behind the newest feature week depends on how far the price data extends, so it is not a fixed number. When prices run past the newest Friday, as they do after a mid-week pull, the gap is 1 week. In real Monday-morning operation the data stops at the previous Friday and the gap is 2 weeks. Both are correct; neither is the invariant to check.
@@ -463,6 +602,8 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 ### Process
 
 - Stages 6 and 7 — live job, notifications, server — do not start until the backtest has run and the pass rule has been evaluated. See the stage list above.
+- **That gate has now closed against them.** The pass rule was evaluated on 2026-09-10 and the model failed all 3 tests at both cost levels. The gate's purpose was to avoid building deployment infrastructure for a strategy that does not work, and that is exactly the situation. Stages 6 and 7 were deliberately not built. The decision to build them anyway — to accumulate a live paper track record, or to learn the deployment side — belongs to the user and has not been taken.
+- If a version 2 is attempted, the stage 4 and stage 5 diagnostics are the place to start, not the model. Sector momentum carries no unconditional signal, the regime interaction that version 1 bet on loses in every regime tested, and performance improves monotonically as the ranking is acted on less. A different model over the same 11 features is very unlikely to change that; a different signal would be needed.
 - Data leakage and date alignment are the easiest ways to get a fake good result. Show the work on any step that touches them, and on the transaction-cost math.
 
 # Working in this repo
@@ -476,8 +617,8 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
   - `features.py` — builds the Group A and Group B columns and writes the features table.
   - `labels.py` — builds the open-to-open excess return and writes the labels table.
   - `backtest.py` — turns weights into weekly returns and turnover, charges costs, builds the no-model strategies, computes the metrics, and writes the results folder.
-  - `model.py` — the walk-forward random forest. Empty.
-- `main.py` — the runner, with subcommands `backfill`, `update`, `dataset`, `backtest`, and `predict`. The first 4 exist.
+  - `model.py` — the walk-forward random forest, the settings it is fitted with, the closed-label cutoff, and the predictions writer.
+- `main.py` — the runner, with subcommands `backfill`, `update`, `dataset` and `backtest`. `predict` was never built: it belongs to stage 6, which the pass rule gated shut.
 - `tests/` — covers the steps where a mistake is silent: the FRED one-business-day lag, the Treasury alignment, the closed-label rule, and the holiday fill rule.
 - `notebooks/main.ipynb` — prototyping only. Working code moves into the package.
 - `data/` — `BAMLH0A0HYM2.csv` is committed and is the only source for the full high-yield spread history. The `.db` files are git-ignored.
@@ -503,5 +644,6 @@ Data pulls hit the Tiingo and FRED APIs. Both are free tiers, but ask before run
 
 - The full history of `BAMLH0A0HYM2` came from the committed CSV, not the FRED API, which returns only the trailing 3 years. A rebuild that skips the CSV silently truncates the series from 1996 to 2023 with no error.
 - The FRED series share the `prices` table with the ETFs. A query that assumes every row is a stock price will pick up yields and spreads too.
+- A schema change leaves a stale `features` table that is present, readable and wrong. Checking the table exists is not enough — the failure surfaces several steps later as SQL complaining about a column the code asked for. `main.py backtest` now checks every name in `FEATURE_COLUMNS` against the stored table and says which one is missing. Any future change to the feature list needs a `dataset` rebuild, and this is what will tell you so.
 - SPY is in `ALL_TICKERS` and lands in the same wide frame as the sectors, but it is not one of the 11. Every ranking, every sector count, and the equal-weight benchmark has to exclude it. Leaving it in makes the rank feature run 1 to 12 and quietly puts SPY in the portfolio.
 - `INSERT OR REPLACE` does not edit a row in place. It deletes the matching row and inserts a new one built only from the columns the statement names, so any column left out comes back as NULL. This is why `store_rows` has to name all 4 columns and why every tuple passed to it must carry 4 values, with FRED passing `None` for the open.

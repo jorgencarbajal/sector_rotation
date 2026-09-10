@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 from sector_rotation.config import SECTORS
-from sector_rotation.db import get_conn
+from sector_rotation.db import get_conn, table_exists
 from sector_rotation.features import FEATURE_COLUMNS
 
 # How many sectors the portfolio holds, equally weighted.
@@ -176,20 +176,23 @@ def equal_weight_sectors(returns: pd.DataFrame) -> pd.DataFrame:
     return equal_weights(selected, returns.columns)
 
 
-def momentum_baseline(
+def top_n_by_score(
     returns: pd.DataFrame,
-    ranks: pd.DataFrame,
+    scores: pd.DataFrame,
     top_n: int = DEFAULT_TOP_N,
 ) -> pd.DataFrame:
     """
-    Builds the weights for holding the `top_n` sectors with the strongest 12-week relative momentum, in equal proportion.
-    Returns a DataFrame of weeks by every ticker in `returns`, each row summing to 1 across the sectors picked that week, or to 0 in a week with no ranks.
+    Builds the weights for holding the `top_n` sectors with the highest score that week, in equal proportion.
+    Returns a DataFrame of weeks by every ticker in `returns`, each row summing to 1 across the sectors picked that week, or to 0 in a week with no scores.
+    `rank(axis=1, ascending=False)` orders each week's sectors from highest score to lowest, so the top_n are the ones ranked at or below top_n.
     """
 
-    # Select the sectors ranked 1 through top_n that also have a return that week
-    # The second condition matters: a sector can carry a rank while its holding period has not closed, and holding it would turn the whole week's return into NaN.
-    ranked = ranks.reindex(index=returns.index, columns=SECTORS)
-    selected = (ranked <= top_n) & returns[SECTORS].notna()
+    # Order each week's sectors by score and select the best top_n that also have a return that week
+    # Ranking here rather than reading a stored rank is what lets one function serve both callers: the momentum baseline hands it the 12-week momentum percentile, the model line hands it the predicted excess return.
+    # The second condition matters: a sector can carry a score while its holding period has not closed, and holding it would turn the whole week's return into NaN.
+    aligned = scores.reindex(index=returns.index, columns=SECTORS)
+    ordered = aligned.rank(axis=1, ascending=False, method="first")
+    selected = (ordered <= top_n) & returns[SECTORS].notna()
     return equal_weights(selected, returns.columns)
 
 
@@ -381,3 +384,26 @@ def write_results(priced: dict[str, pd.DataFrame], benchmark: str = "SPY buy-and
     plot_comparison(priced, chart_path)
 
     return [weekly_path, metrics_path, by_year_path, chart_path]
+
+
+def load_predictions() -> pd.DataFrame:
+    """
+    Reads the predictions table and returns it with weeks down the side and sectors across the top.
+    Returns a DataFrame of weeks by the sectors predicted, or an empty DataFrame when the table does not exist.
+    `pivot` turns the long table, which has one row per week-and-sector pair, into the wide shape the weighting functions read.
+    """
+
+    # Return nothing rather than raising when no walk-forward run has happened yet, so the backtest can simply omit the model line
+    if not table_exists("predictions"):
+        return pd.DataFrame()
+
+    # Open the database connection, read the predictions into a long dataframe with real dates, close the connection
+    conn = get_conn()
+    long = pd.read_sql(
+        "SELECT signal_date, ticker, predicted_excess FROM predictions ORDER BY signal_date, ticker",
+        conn,
+        parse_dates=["signal_date"],
+    )
+    conn.close()
+
+    return long.pivot(index="signal_date", columns="ticker", values="predicted_excess")

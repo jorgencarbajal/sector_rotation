@@ -53,3 +53,18 @@ def table_exists(name: str) -> bool:
     conn.close()
 
     return found is not None
+
+
+def table_columns(name: str) -> list[str]:
+    """
+    Lists the column names of a table.
+    Returns them in the order the table declares them, or an empty list when the table does not exist.
+    `PRAGMA table_info(...)` is how SQLite reports a table's own structure, and field 1 of each row it returns is that column's name.
+    """
+
+    # Ask SQLite for the table's structure and pull the name out of each row
+    conn = get_conn()
+    columns = [row[1] for row in conn.execute(f"PRAGMA table_info({name})")]
+    conn.close()
+
+    return columns

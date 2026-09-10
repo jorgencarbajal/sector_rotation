@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.9",
     "pandas>=3.0.3",
     "python-dotenv>=1.2.2",
+    "scikit-learn>=1.5",
     "requests>=2.34.2",
 ]
 

@@ -73,3 +73,22 @@ def test_fill_dates_never_returns_the_signal_friday() -> None:
     filled = fill_dates(fridays, trading_days)
 
     assert (filled.dropna() > filled.dropna().index).all()
+
+
+def test_align_fred_walks_back_past_a_present_but_empty_thursday() -> None:
+    """
+    Checks that a Thursday which appears in the frame but holds no reading for this series still falls back to the newest earlier one.
+    Returns None; fails if it returns NaN, which is what happens when only the index is walked back and the values are not.
+    """
+
+    # Build 3 days where the Thursday row exists but its value is missing, which is what a pivot produces when a different series published that day
+    fred = pd.DataFrame(
+        {"DGS10": [3.0, None, 9.9]},
+        index=pd.to_datetime(["2026-01-07", "2026-01-08", "2026-01-09"]),
+    )
+    friday = pd.DatetimeIndex(["2026-01-09"])
+
+    aligned = align_fred(fred, friday)
+
+    # 3.0 is Wednesday's value. A NaN here means the row was found and returned with its hole intact.
+    assert aligned.loc["2026-01-09", "DGS10"] == 3.0
