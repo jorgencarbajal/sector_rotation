@@ -132,7 +132,7 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2, task 8 of 10.**
+**Current position: stage 2, task 9 of 10.**
 
 Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
@@ -151,6 +151,10 @@ The leakage check passes with room to spare. Across all 4,491 Friday-and-series 
 The trend flag holds only 0.0 and 1.0 with no filled-in False, first valid 1998-10-02 which is 40 weeks after the frame starts, and sits above the average in 74.3% of weeks.
 
 Task 7 is done — `fill_dates` maps each Friday to the first trading day strictly after it. The gap is 3 calendar days in 1,354 weeks (Friday to Monday), 4 days in 141 (a Monday holiday), and 5 days in 2. In 0 of 1,497 weeks does the fill date equal the Friday, which is the check that the lookahead trap is closed. Labor Day 2026 resolves Friday 2026-09-04 to Tuesday 2026-09-08, and Good Friday 2026-04-03 — a Friday that is not a trading day at all — resolves to Monday 2026-04-06. Truncating the data at a Friday makes the newest week's fill date NaT, which is the normal live case: on Monday morning the day the trade fills has not been recorded yet.
+
+Task 8 is done — `build_feature_table` and `write_feature_table` produce 14,013 rows by 14 columns, running 1998-12-25 to 2026-09-04. The row count matches the number of non-NaN weekly price cells across the 11 sectors exactly, 0 rows duplicate a signal date and ticker, and 0 weeks have a regime column that differs across sectors. XLRE's and XLC's first rows land on 2015-10-09 and 2018-06-22, their first weekly prices. The write path was tested against a throwaway database: running it twice gives the same 14,013 rows, the round trip preserves every numeric value, and the primary key rejects a duplicate insert.
+
+The first week where all 11 features are present is 1999-12-24, set by the 52-week beta. Five years from there puts the first walk-forward prediction at roughly the end of 2004, which matches the estimate already in the decisions log. 12,792 of the 14,013 rows are fully complete; the rest are real observations missing a column whose window has not filled yet.
 
 XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly returns correlate -0.41 with SPY's over the trailing 52 weeks, measured independently with `.corr()`, and the value has drifted steadily from -0.63 over 8 weeks rather than spiking. Negative betas are rare but not wrong: 44 of 13,441 sector-weeks, or 0.33%. A rolling one-year beta describes one year, not the sector's character.
 

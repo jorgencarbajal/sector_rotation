@@ -21,6 +21,21 @@ TREND_WINDOW: int = 40
 # Every FRED series here publishes the prior business day's value: the Treasuries around 4:15pm ET and the credit spread around 10:00am ET. Friday's own values therefore land Monday, after the job has run and after the fill, so Thursday's is the newest one honestly available.
 FRED_LAG_BUSINESS_DAYS: int = 1
 
+# The 11 feature columns in the order they are written, after the 3 key columns signal_date, ticker and fill_date.
+FEATURE_COLUMNS: tuple[str, ...] = (
+    "rel_mom_4w",
+    "rel_mom_12w",
+    "rel_mom_26w",
+    "mom_rank_12w",
+    "vol_20d",
+    "vol_60d",
+    "beta_52w",
+    "curve_slope",
+    "curve_slope_change",
+    "hy_oas",
+    "spy_above_40w",
+)
+
 
 def load_daily_prices(tickers: Sequence[str] = ALL_TICKERS) -> pd.DataFrame:
     """
@@ -233,3 +248,88 @@ def fill_dates(weekly_index: pd.DatetimeIndex, daily_index: pd.DatetimeIndex) ->
     out = [daily_index[p] if p < len(daily_index) else pd.NaT for p in positions]
 
     return pd.Series(out, index=weekly_index, name="fill_date")
+
+
+def build_feature_table(
+    weekly: pd.DataFrame,
+    daily: pd.DataFrame,
+    fred_daily: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Turns the wide per-feature frames into one long table holding a row for every week and sector, with the 11 features as columns.
+    Returns a DataFrame of roughly 15,000 rows by 14 columns, sorted by signal date then ticker; a sector that had no closing price that week gets no row at all.
+    `stack(future_stack=True)` folds the sector columns down into rows, turning a weeks-by-sectors frame into one value per week-and-sector pair while keeping the NaN cells.
+    """
+
+    # Build each wide feature frame from the price data
+    momentum = relative_momentum(weekly)
+    volatility = realized_volatility(daily, weekly.index)
+    group_a = {
+        "rel_mom_4w": momentum[4],
+        "rel_mom_12w": momentum[12],
+        "rel_mom_26w": momentum[26],
+        "mom_rank_12w": momentum_rank(momentum[12]),
+        "vol_20d": volatility[20],
+        "vol_60d": volatility[60],
+        "beta_52w": rolling_beta(weekly),
+    }
+
+    # Fold every sector-specific frame from weeks-by-sectors down into one row per week-and-sector pair, then line them up side by side as columns
+    # future_stack=True keeps the NaN cells rather than silently dropping them, so all 7 frames fold to exactly the same set of rows and line up.
+    table = pd.concat(
+        {name: frame.stack(future_stack=True) for name, frame in group_a.items()},
+        axis=1,
+    )
+    table.index.names = ["signal_date", "ticker"]
+    table = table.reset_index()
+
+    # Attach the 4 regime columns and the fill date by matching on the signal date, which repeats each value across that week's sectors
+    regime = group_b_features(weekly, fred_daily)
+    regime["fill_date"] = fill_dates(weekly.index, daily.index)
+    table = table.merge(regime, left_on="signal_date", right_index=True, how="left")
+
+    # Keep only the pairs where that sector actually had a closing price that week
+    # Testing for "every feature is NaN" would not work here: the 4 regime columns go back to 1998 for every sector, so a row for XLC in 2005 would carry a curve slope and a credit spread and survive despite the sector not existing yet.
+    had_price = weekly[SECTORS].stack(future_stack=True).notna()
+    had_price.index.names = ["signal_date", "ticker"]
+    keys = pd.MultiIndex.from_frame(table[["signal_date", "ticker"]])
+    table = table[had_price.reindex(keys).to_numpy()]
+
+    # Store the two date columns as YYYY-MM-DD text, matching how the prices table already stores dates
+    # fill_date stays empty for the newest week, whose fill day has not been recorded yet.
+    table["signal_date"] = table["signal_date"].dt.strftime("%Y-%m-%d")
+    table["fill_date"] = table["fill_date"].dt.strftime("%Y-%m-%d")
+
+    ordered = ["signal_date", "ticker", "fill_date", *FEATURE_COLUMNS]
+    return table[ordered].sort_values(["signal_date", "ticker"]).reset_index(drop=True)
+
+
+def write_feature_table(table: pd.DataFrame) -> int:
+    """
+    Drops the features table, recreates it, and inserts every row of the given frame.
+    Returns the number of rows written; raises sqlite3.IntegrityError if the frame holds two rows with the same signal date and ticker.
+    `to_sql(..., if_exists="append")` writes into the table that was just created rather than letting pandas invent its own schema without a primary key.
+    """
+
+    # Drop the table and build it again from scratch
+    # A full rebuild rather than an append, for the same reason prices are re-pulled in full: Tiingo restates past adjusted prices when a dividend is paid, so appending would mix rows computed before a restatement with rows computed after it.
+    conn = get_conn()
+    conn.execute("DROP TABLE IF EXISTS features")
+    feature_columns_sql = ",\n            ".join(f"{name} REAL" for name in FEATURE_COLUMNS)
+    conn.execute(f"""
+        CREATE TABLE features (
+            signal_date TEXT NOT NULL,
+            ticker      TEXT NOT NULL,
+            fill_date   TEXT,
+            {feature_columns_sql},
+            PRIMARY KEY (signal_date, ticker)
+        )
+    """)
+
+    # Insert every row, then commit and close
+    # The primary key above makes a duplicate signal_date and ticker pair impossible rather than something to check for afterward.
+    table.to_sql("features", conn, if_exists="append", index=False)
+    conn.commit()
+    conn.close()
+
+    return len(table)
