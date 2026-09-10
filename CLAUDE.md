@@ -132,7 +132,7 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2, task 6 of 10.**
+**Current position: stage 2, task 7 of 10.**
 
 Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
@@ -143,6 +143,12 @@ Task 3 is done — `momentum_rank` ranks the 12-week frame within each week. All
 Task 4 is done — `realized_volatility` returns a dict keyed by window in trading days, each value 1,497 weeks by the 11 sectors. A hand-computed 20-day standard deviation for XLK on 2026-09-04 matches the stored value to 12 decimal places. The holiday-Friday fallback was confirmed on real data: 2026-04-03 is Good Friday, it appears in the weekly index but not the daily one, and the value used comes from Thursday 2026-04-02. The 60-day estimate moves 0.000589 per week on average against the 20-day one's 0.001582, which is the steadier-estimate reasoning showing up in the numbers.
 
 Task 5 is done — `rolling_beta` returns 1,497 weeks by the 11 sectors. SPY against itself came back between 0.999999999999999 and 1.000000000000048 across 1,445 weeks, and the slope for XLK on 2026-09-04 matches `numpy.polyfit` on the same 52 points to 12 decimal places. Long-run average betas order exactly as they should: XLU 0.54, XLP 0.56, XLRE 0.76, XLV 0.78, XLE 0.92, XLC 0.94, XLB 1.04, XLI 1.05, XLY 1.10, XLF 1.14, XLK 1.19.
+
+Task 6 is done — `align_fred` and `group_b_features` produce 1,497 weeks by 4 columns: `curve_slope`, `curve_slope_change`, `hy_oas`, `spy_above_40w`. `load_daily_prices` gained a `tickers` parameter so the same loader reads the 3 FRED series.
+
+The leakage check passes with room to spare. Across all 4,491 Friday-and-series pairs, the observation used is never dated on or after its own Friday: 4,388 reach back 1 calendar day to the Thursday, 102 reach back 2 days when that Thursday was a holiday, and exactly 1 reaches back 4 days. That worst case of 4 days also settles the "no blind forward-fill across gaps" concern — no value is ever carried further than that, so no cap in code is needed.
+
+The trend flag holds only 0.0 and 1.0 with no filled-in False, first valid 1998-10-02 which is 40 weeks after the frame starts, and sits above the average in 74.3% of weeks.
 
 XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly returns correlate -0.41 with SPY's over the trailing 52 weeks, measured independently with `.corr()`, and the value has drifted steadily from -0.63 over 8 weeks rather than spiking. Negative betas are rare but not wrong: 44 of 13,441 sector-weeks, or 0.33%. A rolling one-year beta describes one year, not the sector's character.
 

@@ -14,22 +14,31 @@ VOLATILITY_WINDOWS: tuple[int, ...] = (20, 60)
 # The beta lookback in weeks, 52 being one year of weekly returns.
 BETA_WINDOW: int = 52
 
+# The SPY trend lookback in weeks. 40 weeks is roughly the 200-day moving average people quote.
+TREND_WINDOW: int = 40
 
-def load_daily_prices() -> pd.DataFrame:
+# How many business days to step back from the Friday signal date before reading a FRED series.
+# Every FRED series here publishes the prior business day's value: the Treasuries around 4:15pm ET and the credit spread around 10:00am ET. Friday's own values therefore land Monday, after the job has run and after the fill, so Thursday's is the newest one honestly available.
+FRED_LAG_BUSINESS_DAYS: int = 1
+
+
+def load_daily_prices(tickers: Sequence[str] = ALL_TICKERS) -> pd.DataFrame:
     """
-    Reads the adjusted closes of all 12 Tiingo tickers out of the prices table and returns them with dates down the side and tickers across the top.
-    Returns a DataFrame of roughly 7,200 rows by 12 columns; cells before a ticker's first trading day are NaN rather than 0.
+    Reads the given tickers out of the prices table and returns them with dates down the side and tickers across the top.
+    Returns a DataFrame with one column per requested ticker; cells before a ticker's first observation are NaN rather than 0.
     `pivot` turns the long table, which has one row per date-and-ticker pair, into the wide shape where each ticker gets its own column.
     """
 
-    placeholders = ",".join("?" * len(ALL_TICKERS))
+    # The default reads the 12 Tiingo tickers. Passing FRED_SERIES reads the 3 macro series instead - the reshaping is identical, so a second loader would be a copy of this one.
+    tickers = list(tickers)
+    placeholders = ",".join("?" * len(tickers))
 
-    # Open the database connection, read the 12 tickers into a long dataframe with real dates, close the connection
+    # Open the database connection, read the requested tickers into a long dataframe with real dates, close the connection
     conn = get_conn()
     long = pd.read_sql(
         f"SELECT date, ticker, value FROM prices WHERE ticker IN ({placeholders}) ORDER BY date, ticker",
         conn,
-        params=ALL_TICKERS,
+        params=tickers,
         parse_dates=["date"],
     )
     conn.close()
@@ -37,8 +46,8 @@ def load_daily_prices() -> pd.DataFrame:
     # Reshape from one row per date-and-ticker into one row per date with a column per ticker
     wide = long.pivot(index="date", columns="ticker", values="value")
 
-    # Reorder the columns to match ALL_TICKERS, XLRE and XLC list later than the rest
-    return wide[ALL_TICKERS]
+    # Reorder the columns to match the requested order, XLRE and XLC list later than the rest
+    return wide[tickers]
 
 
 def to_weekly(daily: pd.DataFrame) -> pd.DataFrame:
@@ -155,3 +164,53 @@ def rolling_beta(weekly: pd.DataFrame, window: int = BETA_WINDOW) -> pd.DataFram
     # Keep only the 11 sectors, dropping SPY
     # SPY's own column is exactly 1.0 by construction, since covariance with itself over its own variance is 1. That is worth checking as proof the two return series lined up, and it is why the column is dropped rather than kept.
     return beta[SECTORS]
+
+
+def align_fred(fred_daily: pd.DataFrame, weekly_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    Reads each FRED series as of the business day before every Friday signal date, taking the newest observation dated on or before that day.
+    Returns a DataFrame with one row per Friday and the same columns as the input; a Friday earlier than the series' first observation is NaN.
+    `BDay(n)` shifts a date back by whole business days, and `reindex(..., method="ffill")` picks the last row dated on or before each target date.
+    """
+
+    # Step every Friday back one business day, which lands on the Thursday
+    lagged_dates = weekly_index - pd.tseries.offsets.BDay(FRED_LAG_BUSINESS_DAYS)
+
+    # Look up the newest observation dated on or before each of those Thursdays
+    aligned = fred_daily.reindex(lagged_dates, method="ffill")
+
+    # Put the Friday dates back on the rows so this frame joins against the other features
+    aligned.index = weekly_index
+    return aligned
+
+
+def group_b_features(weekly: pd.DataFrame, fred_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Builds the 4 regime columns, which hold the same value for every sector in a given week and matter only through interactions.
+    Returns a DataFrame of weeks by 4 columns: curve_slope, curve_slope_change, hy_oas, spy_above_40w.
+    `rolling(n).mean()` slides an n-row window down the frame and averages inside it, and `astype("float")` turns the True/False comparison into 1.0 and 0.0.
+    """
+
+    # Read the 3 FRED series as of the business day before each Friday
+    fred = align_fred(fred_daily, weekly.index)
+
+    # Subtract the 2-year yield from the 10-year to get the curve slope, then take its change from the previous week
+    slope = fred["DGS10"] - fred["DGS2"]
+    slope_change = slope.diff()
+
+    # Average SPY's weekly close over the trailing 40 weeks and record whether the latest close sits above it
+    spy = weekly["SPY"]
+    spy_trend = (spy > spy.rolling(TREND_WINDOW).mean()).astype("float")
+
+    # Blank the trend flag for weeks with no 40-week average yet
+    # The comparison above turns NaN into False, which would read as a real "below the average" signal for the first 39 weeks rather than as missing data.
+    spy_trend[spy.rolling(TREND_WINDOW).mean().isna()] = float("nan")
+
+    return pd.DataFrame(
+        {
+            "curve_slope": slope,
+            "curve_slope_change": slope_change,
+            "hy_oas": fred["BAMLH0A0HYM2"],
+            "spy_above_40w": spy_trend,
+        }
+    )
