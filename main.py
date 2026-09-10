@@ -8,6 +8,12 @@ from sector_rotation.fetch import (
     fetch_and_store_fred,
     load_hy_oas_csv,
 )
+from sector_rotation.features import (
+    build_feature_table,
+    load_daily_prices,
+    to_weekly,
+    write_feature_table,
+)
 
 
 def pull_tickers() -> None:
@@ -81,6 +87,35 @@ def update() -> None:
     print(f"  {n} rows")
 
 
+def build_features() -> None:
+    """
+    Rebuilds the features table from whatever is currently in the prices table.
+    Returns None; raises RuntimeError when the prices table holds no equity data, which means backfill has not been run.
+    Named build_features rather than features because this module already imports from a module called features.
+    """
+
+    # Read the 12 Tiingo tickers out of prices and fold them into weekly bars
+    print("Loading prices")
+    daily = load_daily_prices()
+
+    # If no equity rows came back, say so plainly instead of letting pandas raise a KeyError several steps later
+    if daily.empty:
+        raise RuntimeError("no price data found in the prices table - run backfill first")
+
+    weekly = to_weekly(daily)
+    print(f"  {len(daily)} daily rows, {len(weekly)} weekly rows")
+
+    # Read the 3 FRED series, which are stored in the same table with the series id in the ticker column
+    print("Loading FRED series")
+    fred_daily = load_daily_prices(FRED_SERIES)
+
+    # Build all 11 feature columns into one long table, then drop and rebuild the features table from it
+    print("Building features")
+    table = build_feature_table(weekly, daily, fred_daily)
+    n = write_feature_table(table)
+    print(f"  {n} rows written, {table['signal_date'].min()} to {table['signal_date'].max()}")
+
+
 def main() -> int:
     """
     Reads the subcommand off the command line and runs it.
@@ -93,10 +128,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("backfill", help="build the database from nothing: schema, CSV, both APIs")
     subparsers.add_parser("update", help="refresh an existing database from both APIs")
+    subparsers.add_parser("features", help="drop and rebuild the features table from the prices table")
 
     # Read the command line, look the command up in the table, and call it
     args = parser.parse_args()
-    commands = {"backfill": backfill, "update": update}
+    commands = {"backfill": backfill, "update": update, "features": build_features}
     commands[args.command]()
 
     return 0

@@ -62,7 +62,8 @@ def load_daily_prices(tickers: Sequence[str] = ALL_TICKERS) -> pd.DataFrame:
     wide = long.pivot(index="date", columns="ticker", values="value")
 
     # Reorder the columns to match the requested order, XLRE and XLC list later than the rest
-    return wide[tickers]
+    # reindex rather than wide[tickers]: selecting raises KeyError when a requested ticker has no rows at all, while reindex gives it an all-NaN column, which is what the docstring above promises and lets the caller decide what a missing ticker means.
+    return wide.reindex(columns=tickers)
 
 
 def to_weekly(daily: pd.DataFrame) -> pd.DataFrame:

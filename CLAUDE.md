@@ -125,6 +125,8 @@ Row counts and date ranges as of the pull on 2026-09-09:
 | `XLRE` | 2,744 | 2015-10-08 to 2026-09-08 |
 | `XLC` | 2,066 | 2018-06-19 to 2026-09-08 |
 
+The database also holds a `features` table, 14,013 rows by 14 columns, dropped and rebuilt by `main.py features`.
+
 The Treasury series ending 4 days before the equities is the documented one-business-day lag, not a gap. 2026-09-07 was Labor Day, so the newest equity bar is Tuesday 2026-09-08, and Tuesday's Treasury values do not reach FRED until Wednesday afternoon.
 
 
@@ -132,7 +134,11 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 2, task 9 of 10.**
+**Current position: stage 2 complete, stage 3 not started.**
+
+All of stage 2's checks passed against the stored `features` table on 2026-09-09, queried from SQL rather than recomputed: 14,013 rows across 1,446 weeks and 11 sectors, running 1998-12-25 to 2026-09-04. XLC's 3 first-valid momentum dates match. 0 weeks have a regime column that differs across sectors. 0 rows duplicate a signal date and ticker. 0 rows have a fill date on or before their signal date, 0 have a missing one, and every fill date is a real trading day in `prices`. All 1,434 ranked weeks hold 1 through n.
+
+51 signal dates are Fridays the market was closed, and all 51 are identified: 28 Good Fridays covering 1999 through 2026, 4 each of New Year's Day, July 3, July 4, Christmas Eve and Christmas Day, plus 3 one-off closures — 2001-09-14 after the September 11 attacks, 2004-06-11 for Reagan's national day of mourning, and 2026-06-19 for Juneteenth. Those weeks are correct rather than broken: the week ended on the Thursday, and the fill lands on the following Monday.
 
 Task 1 is done — `features.py` has `load_daily_prices` and `to_weekly`, verified against the real database: daily is 7,214 rows by 12 columns, weekly is 1,497 by 12, XLC's first weekly row is 2018-06-22, and no cell before a ticker's inception is 0. The incomplete-final-week rule fired on the first run, dropping a bin labeled 2026-09-11 that held Tuesday 2026-09-08's close.
 
@@ -154,13 +160,15 @@ Task 7 is done — `fill_dates` maps each Friday to the first trading day strict
 
 Task 8 is done — `build_feature_table` and `write_feature_table` produce 14,013 rows by 14 columns, running 1998-12-25 to 2026-09-04. The row count matches the number of non-NaN weekly price cells across the 11 sectors exactly, 0 rows duplicate a signal date and ticker, and 0 weeks have a regime column that differs across sectors. XLRE's and XLC's first rows land on 2015-10-09 and 2018-06-22, their first weekly prices. The write path was tested against a throwaway database: running it twice gives the same 14,013 rows, the round trip preserves every numeric value, and the primary key rejects a duplicate insert.
 
+Task 9 is done — `main.py features` drops and rebuilds the table, printing a line per step. Running it against an empty database raises `no price data found in the prices table - run backfill first` rather than a pandas KeyError. That guard needed a change in `load_daily_prices`: it now reindexes the columns instead of selecting them, so a ticker with no rows comes back as an all-NaN column rather than raising. That is what its docstring already promised, and it lets the caller decide what a missing ticker means.
+
 The first week where all 11 features are present is 1999-12-24, set by the 52-week beta. Five years from there puts the first walk-forward prediction at roughly the end of 2004, which matches the estimate already in the decisions log. 12,792 of the 14,013 rows are fully complete; the rest are real observations missing a column whose window has not filled yet.
 
 XLE currently shows a beta of -0.79, which is real rather than a bug. Its weekly returns correlate -0.41 with SPY's over the trailing 52 weeks, measured independently with `.corr()`, and the value has drifted steadily from -0.63 over 8 weeks rather than spiking. Negative betas are rare but not wrong: 44 of 13,441 sector-weeks, or 0.33%. A rolling one-year beta describes one year, not the sector's character.
 
 Stage 1 is complete. All 4 of its checks passed on 2026-09-09: no equity row has a NULL `adj_open`, no FRED row has a non-NULL one, `BAMLH0A0HYM2` still starts 1996-12-31, and every ticker's row count grew rather than shrank.
 
-`main.py` has 2 of its 5 subcommands written, `backfill` and `update`. The other 3 are deliberately absent because `features.py`, `backtest.py`, and `model.py` are empty — each subcommand gets added when the code behind it exists.
+`main.py` has 3 of its 5 subcommands written: `backfill`, `update`, and `features`. The other 2 are deliberately absent because `backtest.py` and `model.py` are empty — each subcommand gets added when the code behind it exists.
 
 **Stage 1 — Data foundation.** Add the `adj_open` column, change `store_rows` to match, re-pull all 12 Tiingo tickers in full, refresh FRED, and load the CSV. *Check:* `adj_open` is non-NULL for every equity row and NULL for every FRED row; `BAMLH0A0HYM2` still starts 1996-12-31; row counts per ticker match or exceed the counts in Data status above.
 
@@ -199,6 +207,25 @@ Ten tasks, in dependency order. Each names what to check before moving on, becau
 **9. Add the `features` subcommand to `main.py`.** Third of the five, added now that the code behind it exists.
 
 **10. Run the stage 2 checks end to end.** The three in the stage description above, against the written table rather than against frames in memory.
+
+
+### Stage 3 task list
+
+Six tasks, in dependency order. Stage 3 is where the project first uses data from *after* the signal date, so the checks matter more here than anywhere so far — a label built one week off looks entirely reasonable and produces a backtest that is quietly wrong.
+
+**Two decisions to settle before task 1.** Whether the labels live in their own table or as another column on `features`, and which subcommand builds them given that the 5-subcommand list has no `labels` entry.
+
+**1. Let `load_daily_prices` read the opens.** It currently reads `value`, the adjusted close. A `column` parameter lets the same function return `adj_open` instead, which is what fills are priced at. *Check:* the opens frame has the same shape as the closes frame, and no date-and-ticker pair has a close but no open.
+
+**2. Build the label.** For each week and sector, the sector's return from its fill open to the following week's fill open, minus SPY's return over the same two dates. The following week's fill date comes from shifting the fill-date series back by one row. *Check:* one sector's label for one week, computed by hand from 4 raw opens, matches the stored value; every sector's label is NaN in the newest week, because its window has not closed; a label computed for SPY against itself is exactly 0.
+
+**3. Write the labels table.** Same drop-and-rebuild treatment as `features`, keyed on signal date and ticker so the two tables join cleanly. *Check:* the primary key rejects a duplicate insert; a round trip through SQLite preserves every value; running it twice gives the same row count.
+
+**4. Wire it into `main.py`.** One command rebuilds both tables, since the 5-subcommand list has no `labels` entry. *Check:* one run produces both tables from scratch, and running it twice leaves the same row counts.
+
+**5. Add pytest and write the first 4 tests.** They cover the steps where a mistake is silent: the FRED one-business-day lag, the Treasury alignment, the closed-label rule, and the holiday fill rule. *Check:* each test fails when you deliberately break the thing it guards. A test that still passes with the code broken is worth nothing, so this is the check that matters, not the count of passing tests.
+
+**6. Run the stage 3 checks end to end.** Against the stored tables, queried from SQL rather than recomputed. *Check:* the newest labeled week is exactly one week behind the newest feature week; a week whose Monday is a market holiday fills on the Tuesday; every labeled row joins to exactly one feature row.
 
 
 ## Decisions log
