@@ -125,7 +125,7 @@ Row counts and date ranges as of the pull on 2026-09-09:
 | `XLRE` | 2,744 | 2015-10-08 to 2026-09-08 |
 | `XLC` | 2,066 | 2018-06-19 to 2026-09-08 |
 
-The database also holds a `features` table of 14,013 rows by 14 columns and a `labels` table of 14,002 rows by 3, both dropped and rebuilt by `main.py dataset`.
+The database also holds a `features` table of 14,013 rows by 14 columns and a `labels` table of 14,002 rows by 4, both dropped and rebuilt by `main.py dataset`.
 
 The Treasury series ending 4 days before the equities is the documented one-business-day lag, not a gap. 2026-09-07 was Labor Day, so the newest equity bar is Tuesday 2026-09-08, and Tuesday's Treasury values do not reach FRED until Wednesday afternoon.
 
@@ -134,7 +134,11 @@ The Treasury series ending 4 days before the equities is the documented one-busi
 
 The order the project gets built in, and where it currently stands. Each stage names what it produces and what to check to know it actually worked — most steps here produce a table that looks correct whether or not it is, so the check matters as much as the build.
 
-**Current position: stage 3 complete, stage 4 not started.**
+**Current position: stage 4, task 2 of 8.**
+
+Task 1 is done — the `labels` table gained a `spy_return` column, giving 14,002 rows by 4. A hand computation from 2 raw SPY opens matches to 12 decimal places. `spy_return` is identical across sectors in 0 weeks out of variance, and `excess_return + spy_return` recovers the sector's absolute return with a worst discrepancy of 0.00e+00 across all 14,002 rows, not just a spot check. The NOT NULL constraint rejects a null. Verified on a copy of the database before you ran it.
+
+Refactoring for this pulled the shared calculation into `holding_period_returns`, which returns every ticker's absolute return over the holding week. `build_labels` and `build_label_table` both read from it, so the excess and SPY numbers come off one frame and cannot drift apart.
 
 All of stage 3's checks passed against the stored tables on 2026-09-10, queried from SQL. `features` holds 14,013 rows to 2026-09-04, `labels` holds 14,002 to 2026-08-28. All 14,002 labels join to a feature row and 0 are orphaned. 3 holiday weeks were spot-checked and each fills on the Tuesday: 2026-09-04 and 2025-08-29 over Labor Day, 2026-01-16 over Martin Luther King Day. 0 labeled weeks have a missing fill date.
 
@@ -250,17 +254,11 @@ Six tasks, in dependency order. Stage 3 is where the project first uses data fro
 
 Eight tasks. Stage 4 produces the number the model has to beat, so a backtest that flatters itself here sets the bar too low and every stage 5 result inherits the error.
 
-**Two decisions to settle before task 1.**
-
-The labels table holds excess returns only — sector minus SPY. The backtest needs absolute returns as well, for SPY's own line and for the portfolio's return. Either the labels table gains a `spy_return` column, from which a sector's absolute return is `excess_return + spy_return`, or `backtest.py` recomputes both from prices. Storing it is the recommendation: it comes from the same 2 dates at the same time, and recomputing it elsewhere is how two numbers that should agree stop agreeing.
-
-The logged cost rule says holding a sector 2 weeks running costs nothing. That is exactly true only if the position is never rebalanced back to equal weight. A sector that ran up 10% while the others were flat is above its target weight, and trimming it costs something. The simple reading understates costs slightly and so flatters every line equally. Decide whether the turnover calculation follows target weights week to week, or accounts for the drift.
-
 **1. Add `spy_return` to the labels table.** Computed from the same 2 fill opens as the excess return. *Check:* one week's value hand-computed from 2 raw SPY opens; a sector's absolute return recovered as `excess_return + spy_return` matches the same return computed directly from that sector's own opens.
 
 **2. Turn a weekly set of picks into a weekly return series.** Given which sectors are held each week, produce the portfolio's return for that week and the turnover against the previous week. *Check:* a hand-built 3-week example with known picks gives the returns you can work out on paper; turnover is 0 in a week where the picks did not change.
 
-**3. Apply transaction costs to turnover.** A parameter, default 5 basis points per side, charged on the portion of the portfolio that changes. *Check:* holding the same 3 sectors 2 weeks running costs exactly 0; replacing 1 of 3 costs the round trip on one third of the portfolio.
+**3. Apply transaction costs to turnover.** A parameter, default 5 basis points per side, charged on the portion of the portfolio that changes. *Check:* holding the same 3 sectors 2 weeks running with all 3 flat costs exactly 0; holding the same 3 after one of them moved costs only the trimming back to equal weight; replacing 1 of 3 costs the round trip on roughly a third of the portfolio.
 
 **4. Build the 3 strategies that need no model.** SPY buy-and-hold, equal weight across the sectors valid that week rebalanced weekly, and the momentum baseline that sorts on 12-week relative momentum and holds the top N. *Check:* the SPY line's weekly return equals `spy_return` exactly; the equal-weight line equals the mean of that week's sector returns; the momentum baseline's picks are exactly the rows with `mom_rank_12w` of 1 through N.
 
@@ -354,6 +352,8 @@ On sizing: 11 features against roughly 16,000 rows sounds generous and isn't. Wi
 
 - 4 lines through the same backtest with the same fills and costs: the model, SPY buy-and-hold, equal weight across sectors valid that week rebalanced weekly, and a momentum baseline sorting on 12-week relative momentum and holding the top N with no model.
 - Transaction costs: a parameter, default 5 basis points per side, charged only on the portion of the portfolio that changes. The final backtest is run once more at 10 basis points for sensitivity.
+- Turnover accounts for weight drift. Each week's actual weights, after a week of price moves has pushed them away from equal, are compared against the new target weights, and the cost is charged on the difference. Comparing target to target would see no change when the same sectors are held 2 weeks running and charge nothing, even though the position really was trimmed back to equal weight. That understates costs on every line equally, so it would leave the comparison between them fair while making all the absolute returns better than reality.
+- The `labels` table carries a `spy_return` column alongside `excess_return`, computed from the same 2 fill opens. A sector's absolute return is then `excess_return + spy_return`, and SPY's own backtest line is `spy_return` directly. Storing it rather than recomputing it in `backtest.py` keeps 2 numbers that must agree from drifting apart.
 - Metrics after costs, for all 4 lines: annual return, annual volatility, Sharpe ratio with the risk-free rate set to zero and labeled as such, maximum drawdown, average weekly turnover, hit rate as the fraction of weeks beating SPY, and return per calendar year.
 - Pass rule, fixed before the backtest runs: the model's Sharpe and net annual return both beat the momentum baseline, and the model beats the baseline in more than half the calendar years. Beating SPY but not the baseline means momentum works and the model adds nothing. Underperforming is a valid finding.
 - Feature-freshness diagnostic, to run once stage 4 works: rebuild with the 3 FRED series unlagged, taking each Friday's own value instead of Thursday's, and compare against the lagged build. The unlagged version is not tradeable — Friday's high-yield spread does not post until Monday 10:00am ET — so it is a diagnostic, never a candidate strategy. If the two are indistinguishable, that settles it: neither paying for a real-time ICE feed nor moving the rebalance to Tuesday is worth pursuing.

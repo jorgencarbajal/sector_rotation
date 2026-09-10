@@ -17,10 +17,10 @@ def opens_at(opens: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
     return looked_up
 
 
-def build_labels(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
+def holding_period_returns(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
     """
-    Computes each sector's return from its fill open to the following week's fill open, minus SPY's return over those same two dates.
-    Returns a DataFrame of weeks by the 11 sectors; the newest week is all NaN because its holding period has not finished.
+    Computes every ticker's return from each week's fill open to the following week's fill open, which is the period a position is actually held for.
+    Returns a DataFrame of weeks by every ticker in `opens`, SPY included; the newest week is all NaN because its holding period has not finished.
     `shift(-1)` moves every value up one row, so each week's row ends up holding the *following* week's fill date.
     """
 
@@ -32,9 +32,20 @@ def build_labels(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
     sell = opens_at(opens, sell_dates)
 
     # Divide the selling price by the buying price and subtract 1, giving every ticker its return over the week actually held
-    returns = sell / buy - 1
+    # These are opening prices on both ends because that is when trades fill. Measuring Friday close to Friday close would credit the weekend move between Friday's close and Monday's open, which the position does not own.
+    return sell / buy - 1
+
+
+def build_labels(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
+    """
+    Computes each sector's return over its holding period minus SPY's return over those same two dates.
+    Returns a DataFrame of weeks by the 11 sectors; the newest week is all NaN because its holding period has not finished.
+    `sub(series, axis=0)` subtracts one column from every column of the frame, matching them up row by row.
+    """
 
     # Subtract SPY's return over the same two dates from every ticker's return
+    # SPY's own column becomes exactly 0 here, since it is SPY minus SPY, which is worth checking as proof the dates lined up and is why SPY is dropped on the next line.
+    returns = holding_period_returns(opens, fill_dates)
     excess = returns.sub(returns["SPY"], axis=0)
 
     # Keep the 11 sectors, dropping the all-zero SPY column
@@ -45,18 +56,26 @@ def build_labels(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
 def build_label_table(opens: pd.DataFrame, fill_dates: pd.Series) -> pd.DataFrame:
     """
     Turns the wide per-sector labels into a long table with one row per week and sector, ready to join against the features table.
-    Returns a DataFrame of roughly 14,000 rows and 3 columns - signal_date, ticker, excess_return - sorted by date then ticker.
+    Returns a DataFrame of roughly 14,000 rows and 4 columns - signal_date, ticker, excess_return, spy_return - sorted by date then ticker.
     `stack(future_stack=True)` folds the sector columns down into rows, turning a weeks-by-sectors frame into one value per week-and-sector pair while keeping the NaN cells.
     """
 
-    # Compute the wide labels and fold the sector columns down into rows
-    labels = build_labels(opens, fill_dates)
-    table = labels.stack(future_stack=True).rename("excess_return")
+    # Compute every ticker's return over the holding period, then split it into the per-sector excess and SPY's own return
+    # Both come off the same frame so the two numbers cannot drift apart. A sector's absolute return is recovered later as excess_return + spy_return.
+    returns = holding_period_returns(opens, fill_dates)
+    excess = returns.sub(returns["SPY"], axis=0).reindex(columns=SECTORS)
+
+    # Fold the sector columns down into rows
+    table = excess.stack(future_stack=True).rename("excess_return")
     table.index.names = ["signal_date", "ticker"]
     table = table.reset_index()
 
+    # Attach SPY's return for that week, which is the same number for every sector in the week
+    table["spy_return"] = table["signal_date"].map(returns["SPY"])
+
     # Drop the rows with no label, which are weeks where the sector had not listed yet or the holding period has not closed
     # A row with no label teaches the model nothing, so leaving them out means joining this table against features hands you exactly the trainable set.
+    # Dropping on excess_return alone also removes every row with no spy_return, because a missing SPY return makes the excess NaN too.
     table = table.dropna(subset=["excess_return"])
 
     # Store the date as YYYY-MM-DD text, matching how the prices and features tables already store dates
@@ -81,6 +100,7 @@ def write_label_table(table: pd.DataFrame) -> int:
             signal_date   TEXT NOT NULL,
             ticker        TEXT NOT NULL,
             excess_return REAL NOT NULL,
+            spy_return    REAL NOT NULL,
             PRIMARY KEY (signal_date, ticker)
         )
     """)
