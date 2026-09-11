@@ -168,8 +168,11 @@ def run_backtest(cost_bps: float, top_n: int) -> None:
 
     # Cut every line back to the weeks the model can also cover, so the 4 are compared over identical history
     # Without this the model would be judged on 2005 onward while the other 3 carry 1999 onward, and those 6 extra years contain the dot-com crash. The pass rule compares lines against each other, so they have to run over the same weeks.
+    # Both ends are cut, not only the start. After update and dataset add new labeled weeks, a predictions table that was not re-run stops short of them, and without the upper cut the model line would sit in cash at 0% for those weeks while the other 3 lines kept earning, with nothing printed to say so.
     if not predictions.empty:
-        returns = returns.loc[returns.index >= predictions.index.min()]
+        if predictions.index.max() < returns.index.max():
+            print(f"  WARNING: predictions end {predictions.index.max().date()} but labels run to {returns.index.max().date()} - the walk-forward has not been re-run since dataset")
+        returns = returns.loc[(returns.index >= predictions.index.min()) & (returns.index <= predictions.index.max())]
         print(f"  restricted to the model's period, {len(returns)} weeks")
     print(f"  {returns.index[0].date()} to {returns.index[-1].date()}")
 

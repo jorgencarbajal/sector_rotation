@@ -137,7 +137,8 @@ def fetch_and_store_ticker(ticker: str, token: str, start: str) -> int:
 
     # Tiingo restates every adjusted price in a ticker's history whenever that ticker pays a dividend, so this always pulls from `start` rather than from the newest stored date - an incremental pull would leave old rows on the old adjustment factor and new rows on the new one, putting a fake jump at the seam.
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-    r = requests.get(url, params={"startDate": start, "token": token})
+    # timeout=30 matches the FRED call. Without it a stalled connection hangs the whole run forever, and a scheduled job that never exits also never reports a failure.
+    r = requests.get(url, params={"startDate": start, "token": token}, timeout=30)
     r.raise_for_status()
     bars = r.json()
 

@@ -7,7 +7,7 @@ from sector_rotation.db import get_conn, table_exists
 from sector_rotation.features import FEATURE_COLUMNS
 
 # How many sectors the portfolio holds, equally weighted.
-DEFAULT_TOP_N: int = 3
+DEFAULT_TOP_N: int = 6
 
 # What a single side of a trade costs, in basis points of the value traded.
 # 5 is deliberately conservative. Interactive Brokers' explicit fees for this strategy come to roughly 0.66 per side plus a 0.21 SEC fee on sells, but the bid-ask spread and whatever the opening auction prints away from the mid are not in any fee schedule and are the larger unknown. See the decisions log.
@@ -187,12 +187,12 @@ def top_n_by_score(
     `rank(axis=1, ascending=False)` orders each week's sectors from highest score to lowest, so the top_n are the ones ranked at or below top_n.
     """
 
-    # Order each week's sectors by score and select the best top_n that also have a return that week
+    # Blank the score of any sector that has no return that week, then order the rest by score and select the best top_n
     # Ranking here rather than reading a stored rank is what lets one function serve both callers: the momentum baseline hands it the 12-week momentum percentile, the model line hands it the predicted excess return.
-    # The second condition matters: a sector can carry a score while its holding period has not closed, and holding it would turn the whole week's return into NaN.
-    aligned = scores.reindex(index=returns.index, columns=SECTORS)
+    # The blanking happens before the ranking, not after. A sector can carry a score while its holding period has not closed, and holding it would turn the whole week's return into NaN. Filtering after ranking would drop it but leave its rank slot empty, so the line would hold top_n minus 1 rather than promoting the next sector.
+    aligned = scores.reindex(index=returns.index, columns=SECTORS).where(returns[SECTORS].notna())
     ordered = aligned.rank(axis=1, ascending=False, method="first")
-    selected = (ordered <= top_n) & returns[SECTORS].notna()
+    selected = ordered <= top_n
     return equal_weights(selected, returns.columns)
 
 
@@ -225,7 +225,8 @@ def summarise(priced: pd.Series | pd.DataFrame, benchmark: pd.Series | None = No
     net = net.dropna()
 
     # Compound the weekly returns into a total, then find the steady yearly rate that would have produced it
-    years = (net.index[-1] - net.index[0]).days / 365.25
+    # The span runs from the first signal date to the last one plus 7 days, because the last week's return is earned over the week after its signal date. Measuring signal date to signal date counts one week fewer than the money was actually invested and overstates every line's annual return by about 0.01 of a point.
+    years = ((net.index[-1] - net.index[0]).days + 7) / 365.25
     total_growth = float((1 + net).prod())
     annual_return = total_growth ** (1 / years) - 1
 
